@@ -127,31 +127,6 @@ layout_mode: dynamic
 
 ---
 
-## Automations
-
-### Trigger a refresh on HA startup
-
-```yaml
-# Frame TV Art Collections — trigger refresh on HA startup
-automation:
-  - alias: 'Update Frame TV Art Collections on Startup'
-    initial_state: true
-    trigger:
-      - platform: homeassistant
-        event: start
-    action:
-      - delay: '00:01:00'
-      - service: mqtt.publish
-        data:
-          topic: frame_tv/cmd/collections/refresh
-          payload: '{"req_id":"ha_start"}'
-    mode: single
-```
-
-The 1-minute delay gives the `samsung-tv-art` backend container time to fully start before the command arrives. Adjust as needed.
-
----
-
 ## Version
 
 Current version: **v0.2.3** — bump the `?v=` cache-buster in the resource URL whenever you upgrade.
