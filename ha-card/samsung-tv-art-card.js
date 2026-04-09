@@ -39,13 +39,17 @@ class FrameTVArtCard extends HTMLElement {
     this._slideshowOverridePaths = [];
     this._slideshowSelected = new Set();
     this._slideshowMaxUploads = 10;
+    this._slideshowMaxUploadsBaseline = 10;  // server-confirmed value; used to detect changes in Apply
     this._slideshowUploading = false;
     this._overridePanelOpen = false;
     this._slideshowAvailUnsubscribe = null;
     this._slideshowPostClear = false;           // blocks stale current_paths reseed after clear
     this._slideshowClearRefreshPending = false;  // set when Clear fires collections/refresh
     this._slideshowUserRefreshPending = false;   // set when user clicks Refresh button
+    this._slideshowPreviewMode = false;          // set when a shuffle preview has been loaded into the grid
     this._postUploadRefreshTimer = null;         // retries available request after upload completes
+    this._carouselOffsets = {};
+    this._carouselObserver = null;
     // Restore progress log if page was refreshed mid-sync (max 15 min TTL)
     try {
       const _raw = sessionStorage.getItem('ftvHaRefreshLog');
@@ -85,6 +89,7 @@ class FrameTVArtCard extends HTMLElement {
       selected_collections_entity: config.selected_collections_entity || 'sensor.frame_tv_art_selected_collections',
       refresh_cmd_topic: config.refresh_cmd_topic || 'frame_tv/cmd/collections/refresh',
       refresh_ack_topic: config.refresh_ack_topic || 'frame_tv/ack/collections/refresh',
+      slideshow_preview_ack_topic: config.slideshow_preview_ack_topic || 'frame_tv/ack/slideshow/preview/request',
       sync_ack_topic: config.sync_ack_topic || 'frame_tv/ack/settings/sync_collections',
       slideshow_attr_topic: config.slideshow_attr_topic || 'frame_tv/slideshow/attributes',
       slideshow_available_topic: config.slideshow_available_topic || 'frame_tv/slideshow/available',
@@ -212,7 +217,7 @@ class FrameTVArtCard extends HTMLElement {
   _ensureRefreshSubscriptions() {
     if (!this._hass || !this._hass.connection) return;
     if (this._refreshSubscribing) return;
-    if (this._refreshAckUnsubscribe && this._refreshCmdUnsubscribe && this._syncAckUnsubscribe && this._slideshowAttrsUnsubscribe && this._slideshowAvailUnsubscribe && this._logUnsubscribe) return;
+    if (this._refreshAckUnsubscribe && this._refreshCmdUnsubscribe && this._syncAckUnsubscribe && this._slideshowAttrsUnsubscribe && this._slideshowAvailUnsubscribe && this._slideshowPreviewUnsub && this._logUnsubscribe) return;
     this._refreshSubscribing = true;
 
     const ensureAck = this._refreshAckUnsubscribe
@@ -250,6 +255,13 @@ class FrameTVArtCard extends HTMLElement {
           { type: 'mqtt/subscribe', topic: this._config.slideshow_available_topic }
         );
 
+    const ensurePreviewAck = this._slideshowPreviewUnsub
+      ? Promise.resolve(this._slideshowPreviewUnsub)
+      : this._hass.connection.subscribeMessage(
+          (msg) => this._handleSlidePreviewAck(msg),
+          { type: 'mqtt/subscribe', topic: this._config.slideshow_preview_ack_topic }
+        );
+
     const ensureLog = this._logUnsubscribe
       ? Promise.resolve(this._logUnsubscribe)
       : this._hass.connection.subscribeMessage(
@@ -268,13 +280,14 @@ class FrameTVArtCard extends HTMLElement {
           { type: 'mqtt/subscribe', topic: 'frame_tv/log' }
         );
 
-    Promise.all([ensureAck, ensureCmd, ensureSyncAck, ensureSlideshowAttrs, ensureSlideshowAvail, ensureLog])
-      .then(([ackUnsub, cmdUnsub, syncAckUnsub, slideshowAttrsUnsub, slideshowAvailUnsub, logUnsub]) => {
+    Promise.all([ensureAck, ensureCmd, ensureSyncAck, ensureSlideshowAttrs, ensureSlideshowAvail, ensurePreviewAck, ensureLog])
+      .then(([ackUnsub, cmdUnsub, syncAckUnsub, slideshowAttrsUnsub, slideshowAvailUnsub, previewUnsub, logUnsub]) => {
         if (!this._refreshAckUnsubscribe) this._refreshAckUnsubscribe = ackUnsub;
         if (!this._refreshCmdUnsubscribe) this._refreshCmdUnsubscribe = cmdUnsub;
         if (!this._syncAckUnsubscribe) this._syncAckUnsubscribe = syncAckUnsub;
         if (!this._slideshowAttrsUnsubscribe) this._slideshowAttrsUnsubscribe = slideshowAttrsUnsub;
         if (!this._slideshowAvailUnsubscribe) this._slideshowAvailUnsubscribe = slideshowAvailUnsub;
+        if (!this._slideshowPreviewUnsub) this._slideshowPreviewUnsub = previewUnsub;
         if (!this._logUnsubscribe) this._logUnsubscribe = logUnsub;
       })
       .catch(() => {})
@@ -416,6 +429,7 @@ class FrameTVArtCard extends HTMLElement {
     this._slideshowCurrentPaths = (payload && Array.isArray(payload.current_paths)) ? payload.current_paths : [];
     this._slideshowOverridePaths = (payload && Array.isArray(payload.override_paths)) ? payload.override_paths : [];
     this._slideshowMaxUploads = parseInt((payload && payload.max_uploads) || 10, 10);
+    this._slideshowMaxUploadsBaseline = this._slideshowMaxUploads;
     this._slideshowUploading = !!(payload && payload.uploading);
     this._slideshowSeq = !!(payload && payload.sequential);
     this._slideshowUpdateMins = parseInt((payload && payload.update_minutes) || 0, 10);
@@ -443,6 +457,9 @@ class FrameTVArtCard extends HTMLElement {
       } else {
         // Override cleared (override → auto): current_paths is stale (still has the union of
         // all uploaded files). Clear selection and block fallback reseeds until a cycle runs.
+        this._slideshowPreviewMode = false;
+        const _shufClear = this.querySelector('#ftv-op-shuffle');
+        if (_shufClear && !this._slideshowShuffling) _shufClear.textContent = '\u267B Shuffle';
         this._slideshowPostClear = true;
         this._slideshowSelected = new Set();
         // Request a fresh available list so the grid repaints with nothing selected
@@ -466,6 +483,9 @@ class FrameTVArtCard extends HTMLElement {
       if (this._overridePanelOpen) {
         if (uploadJustFinished) {
           this._schedulePostUploadRefresh(5);
+          this._slideshowPreviewMode = false;
+          const _shufUpload = this.querySelector('#ftv-op-shuffle');
+          if (_shufUpload && !this._slideshowShuffling) _shufUpload.textContent = '\u267B Shuffle';
           this._slideshowReverting = false;
           if (mode === 'override') {
             // Override upload completed: override_paths are confirmed by server.
@@ -534,12 +554,26 @@ class FrameTVArtCard extends HTMLElement {
         const paths = this._slideshowMode === 'override' ? this._slideshowOverridePaths : this._slideshowCurrentPaths;
         const seed = paths.filter(p => availPathSet.has(p));
         if (seed.length) { this._slideshowSelected = new Set(seed); this._slideshowPostClear = false; }
-      } else {
+      } else if (!this._slideshowPreviewMode) {
         // Prune any ghost selections carried over from a previous available list
         this._slideshowSelected = new Set([...this._slideshowSelected].filter(p => availPathSet.has(p)));
       }
     }
     if (this._overridePanelOpen) this._renderOverrideGrid();
+  }
+
+  _handleSlidePreviewAck(message) {
+    const payload = this._parseJsonPayload(message);
+    const status = String((payload && payload.status) || '').toLowerCase();
+    this._slideshowShuffling = false;
+    const shufBtn = this.querySelector('#ftv-op-shuffle');
+    if (shufBtn) { shufBtn.disabled = false; shufBtn.textContent = '\u267B Shuffle Again'; }
+    if (status === 'ok' && Array.isArray(payload.paths) && payload.paths.length) {
+      this._slideshowPreviewMode = true;
+      this._slideshowSelected = new Set(payload.paths);
+      this._updateOverrideCounter();
+      if (this._overridePanelOpen) this._renderOverrideGrid();
+    }
   }
 
   _handleSyncAckMessage(message) {
@@ -1303,20 +1337,6 @@ class FrameTVArtCard extends HTMLElement {
             align-items: center;
             justify-content: center;
           }
-          .ftv-refresh {
-            width: 40px;
-            height: 40px;
-            border: none;
-            border-radius: 8px;
-            background: #4a6fa5;
-            color: white;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-          }
-          @keyframes ftv-spin { to { transform: rotate(360deg); } }
-          .ftv-refresh.spinning ha-icon { animation: ftv-spin 0.8s linear infinite; display: flex; }
           .ftv-apply[disabled] {
             opacity: 0.5;
             cursor: default;
@@ -1401,9 +1421,7 @@ class FrameTVArtCard extends HTMLElement {
           .ftv-op-btn:disabled { opacity: 0.4; cursor: default; }
           .ftv-op-grid {
             padding: 4px 10px 12px;
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
-            gap: 6px;
+            display: block;
           }
           .ftv-op-section {
             grid-column: 1 / -1;
@@ -1436,6 +1454,33 @@ class FrameTVArtCard extends HTMLElement {
           }
           .ftv-op-thumb.selected .ftv-op-check { background: #2f7fbf; border-color: #2f7fbf; }
           .ftv-op-hint { padding: 16px 14px; font-size: 0.85em; color: rgba(255,255,255,0.4); text-align: center; }
+          .ftv-coll-row { margin-bottom: 0; }
+          .ftv-coll-header {
+            display: flex; align-items: center; gap: 5px;
+            font-size: 0.72em; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+            color: rgba(255,255,255,0.4); padding: 7px 10px 3px;
+            border-bottom: 1px solid #333; cursor: pointer; user-select: none;
+          }
+          .ftv-chevron { font-size: 8px; transition: transform 0.15s; display: inline-block; flex-shrink: 0; }
+          .ftv-coll-header.open .ftv-chevron { transform: rotate(90deg); }
+          .ftv-coll-sel-badge {
+            font-size: 0.85em; font-weight: 600; text-transform: none; letter-spacing: 0;
+            color: #6ab0f5; background: rgba(47,127,191,0.18); border-radius: 8px; padding: 1px 5px;
+          }
+          .ftv-coll-nav { margin-left: auto; display: flex; align-items: center; gap: 3px; font-weight: normal; text-transform: none; letter-spacing: 0; }
+          .ftv-coll-nav-btn {
+            background: rgba(255,255,255,0.08); border: 1px solid #444; color: #bbb;
+            width: 20px; height: 20px; border-radius: 3px; cursor: pointer; font-size: 9px;
+            display: inline-flex; align-items: center; justify-content: center; padding: 0;
+          }
+          .ftv-coll-nav-btn:disabled { opacity: 0.3; cursor: default; }
+          .ftv-coll-page-lbl { font-size: 0.82em; color: rgba(255,255,255,0.3); min-width: 50px; text-align: center; }
+          .ftv-coll-body {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+            gap: 6px; padding: 6px 10px;
+          }
+          .ftv-coll-body.collapsed { display: none; }
           .ftv-op-switch { position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0; }
           .ftv-op-switch input { opacity: 0; width: 0; height: 0; }
           .ftv-op-slider { position: absolute; cursor: pointer; inset: 0; background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.2); border-radius: 24px; transition: background 0.2s; }
@@ -1465,7 +1510,6 @@ class FrameTVArtCard extends HTMLElement {
               <span>${this._config.title}</span>
             </div>
             <span class="spacer"></span>
-            ${this._slideshowMode === 'override' ? `<button class="ftv-override-badge" id="ftv-override-badge" title="Override active — click to clear"><span class="ftv-badge-dot"></span>Override</button>` : ''}
             <button class="ftv-grid-btn${this._overridePanelOpen ? ' active' : ''}" id="ftv-grid-btn" title="Slideshow override">
               <ha-icon icon="mdi:view-grid"></ha-icon>
             </button>
@@ -1489,16 +1533,14 @@ class FrameTVArtCard extends HTMLElement {
               </div>
               <div class="ftv-op-hint-text">Interval: minutes between changes (0=off). Max: artwork slots on TV.</div>
             </div>
-            ${this._slideshowMode === 'override' ? '<div class="ftv-op-hint-text" style="margin-top:2px;color:#ffb400;">&#x25CF; Override active</div>' : ''}
             <div class="ftv-op-topbar">
               <span class="ftv-op-counter" id="ftv-op-counter">0 / ${this._slideshowMaxUploads} selected</span>
               <div style="display:flex;gap:6px;">
                 <button class="ftv-op-btn" id="ftv-op-reset" style="display:none;">Reset</button>
-                <button class="ftv-op-btn primary" id="ftv-op-apply" disabled>${this._slideshowMode === 'override' ? 'Update Override' : 'Apply Override'}</button>
-                <button class="ftv-op-btn danger" id="ftv-op-clear" style="${this._slideshowMode !== 'override' ? 'display:none' : ''}">Clear Override</button>
+                <button class="ftv-op-btn" id="ftv-op-shuffle">&#x267B; Shuffle</button>
+                <button class="ftv-op-btn primary" id="ftv-op-apply" disabled>Apply</button>
               </div>
             </div>
-            ${this._slideshowMode === 'override' ? '<div class="ftv-op-hint-text" style="margin-bottom:2px;">&#x2713; Override active — re-apply anytime to change the selection.</div>' : ''}
             <div id="ftv-op-warn" class="ftv-op-warn" style="${(this._slideshowUploading || this._slideshowUserRefreshPending || this._slideshowClearRefreshPending) ? '' : 'display:none'}">${this._slideshowUploading ? '&#9888; Uploading \u2014 grid locked' : (this._slideshowUserRefreshPending || this._slideshowClearRefreshPending) ? '&#9888; Refreshing \u2014 grid locked' : '&#9888; Uploading \u2014 grid locked'}</div>
             <div class="ftv-op-grid" id="ftv-op-grid"></div>
           </div>
@@ -1526,9 +1568,6 @@ class FrameTVArtCard extends HTMLElement {
                     `).join('')}
                   </div>
                 </div>
-                <button class="ftv-refresh" id="ftv-refresh" title="Refresh uploads">
-                  <ha-icon icon="mdi:refresh"></ha-icon>
-                </button>
                 <button class="ftv-apply" id="ftv-apply" title="Apply selections">
                   <ha-icon icon="mdi:check"></ha-icon>
                 </button>
@@ -1653,7 +1692,6 @@ class FrameTVArtCard extends HTMLElement {
         if (btnRestartEnv) btnRestartEnv.disabled = tvBlocked;
         if (btnSyncCollections) btnSyncCollections.disabled = tvBlocked;
         if (tvBlocked && btnApplyEnv) btnApplyEnv.disabled = true;
-        if (btnRefresh) btnRefresh.disabled = tvBlocked || this._refreshInProgress;
         const btnClear = this.querySelector('#ftv-clear');
         if (btnClear) btnClear.disabled = tvBlocked || this._refreshInProgress;
         const btnApply = this.querySelector('#ftv-apply');
@@ -1753,9 +1791,36 @@ class FrameTVArtCard extends HTMLElement {
     if (opReset) {
       opReset.addEventListener('click', (e) => {
         e.stopPropagation();
+        this._slideshowPreviewMode = false;
+        const shufBtn = this.querySelector('#ftv-op-shuffle');
+        if (shufBtn) shufBtn.textContent = '\u267B Shuffle';
         const baseline = this._slideshowMode === 'override' ? this._slideshowOverridePaths : this._slideshowCurrentPaths;
         this._slideshowSelected = new Set(baseline);
         this._renderOverrideGrid();
+      });
+    }
+    // Override popup: Shuffle
+    const opShuffle = this.querySelector('#ftv-op-shuffle');
+    if (opShuffle) {
+      opShuffle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!this._hass) return;
+        opShuffle.disabled = true;
+        opShuffle.textContent = 'Shuffling\u2026';
+        this._slideshowShuffling = true;
+        this._hass.callService('mqtt', 'publish', {
+          topic: 'frame_tv/cmd/slideshow/preview/request',
+          payload: JSON.stringify({ req_id: Date.now() }),
+          qos: 1, retain: false,
+        }).catch(() => {});
+        // Safety fallback — ack handler will re-enable first
+        setTimeout(() => {
+          if (opShuffle.disabled) {
+            this._slideshowShuffling = false;
+            opShuffle.disabled = false;
+            opShuffle.textContent = this._slideshowPreviewMode ? '\u267B Shuffle Again' : '\u267B Shuffle';
+          }
+        }, 20000);
       });
     }
     // Override popup: Apply
@@ -1765,44 +1830,30 @@ class FrameTVArtCard extends HTMLElement {
         e.stopPropagation();
         if (!this._hass || !this._slideshowSelected.size) return;
         const paths = Array.from(this._slideshowSelected);
-        const origLabel = opApply.textContent;
+        const wasPreview = !!this._slideshowPreviewMode;
         opApply.disabled = true;
         opApply.textContent = 'Applying\u2026';
+        this._slideshowPreviewMode = false;
+        const payload = { paths, req_id: Date.now() };
+        if (paths.length !== this._slideshowMaxUploadsBaseline) {
+          payload.max_uploads = paths.length;
+          this._slideshowMaxUploads = paths.length;
+          const opMax = this.querySelector('#ftv-op-max');
+          if (opMax && !opMax.dataset.dirty) opMax.value = paths.length;
+        }
         this._hass.callService('mqtt', 'publish', {
           topic: 'frame_tv/cmd/slideshow/override/set',
-          payload: JSON.stringify({ paths, req_id: Date.now() }),
+          payload: JSON.stringify(payload),
           qos: 1, retain: false,
         }).catch(() => {});
         // Safety fallback only — MQTT response cancels this via _updateOverrideCounter
         this._applyRestoreTimer = setTimeout(() => {
           this._applyRestoreTimer = null;
           if (opApply) {
-            opApply.textContent = this._slideshowMode === 'override' ? 'Update Override' : origLabel;
+            opApply.textContent = 'Apply';
             opApply.disabled = this._slideshowSelected.size === 0 || this._slideshowUploading || this._selectionMatchesBaseline();
           }
         }, 8000);
-      });
-    }
-    // Override popup: Clear
-    const opClear = this.querySelector('#ftv-op-clear');
-    if (opClear) {
-      opClear.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (!this._hass) return;
-        opClear.disabled = true;
-        opClear.textContent = 'Clearing…';
-        if (btnRefresh) { btnRefresh.disabled = true; btnRefresh.style.opacity = '0.5'; }
-        // Fire a full collections/refresh: clears override, prunes TV storage,
-        // and reseeds from current collections — guaranteeing current_paths is fresh.
-        this._slideshowClearRefreshPending = true;
-        this._hass.callService('mqtt', 'publish', {
-          topic: 'frame_tv/cmd/collections/refresh',
-          payload: JSON.stringify({ req_id: Date.now() }),
-          qos: 1, retain: false,
-        }).catch(() => {
-          setStatus('Failed to send clear command.', 8000);
-        });
-        this._clearRestoreTimer = setTimeout(() => { this._clearRestoreTimer = null; if (opClear) { opClear.disabled = false; opClear.textContent = 'Clear Override'; } }, 8000);
       });
     }
     // Slideshow settings (inside the popup)
@@ -1942,33 +1993,6 @@ class FrameTVArtCard extends HTMLElement {
         setTimeout(() => { btnSyncCollections.textContent = 'Update & Refresh'; btnSyncCollections.disabled = false; }, 6000);
       } catch (err) {
         setStatus('Update & refresh failed to send. Check MQTT integration/service.', 8000);
-      }
-    });
-
-    if (btnRefresh) btnRefresh.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      if (btnRefresh.disabled) return;
-      try {
-        const reqId = Date.now();
-        this._lastRefreshReqId = reqId;
-        this._refreshAck = {
-          status: 'queued',
-          message: 'Refresh command sent. Waiting for backend confirmation...',
-          req_id: String(reqId),
-          updated: Date.now(),
-        };
-        this._syncRefreshAckStatus();
-        // Lock grid and spin button immediately, before the async publish
-        this._slideshowUserRefreshPending = true;
-        btnRefresh.classList.add('spinning');
-        btnRefresh.disabled = true;
-        if (this._overridePanelOpen) this._renderOverrideGrid();
-        if (this._hass) {
-          await this._hass.callService('mqtt', 'publish', { topic: this._config.refresh_cmd_topic, payload: JSON.stringify({ req_id: reqId }), qos: 1, retain: false });
-        }
-        if (envMsg) envMsg.textContent = 'Requested collections refresh...';
-      } catch (err) {
-        setStatus('Refresh failed to send. Check MQTT integration/service.', 8000);
       }
     });
 
@@ -2157,39 +2181,139 @@ class FrameTVArtCard extends HTMLElement {
       grid.innerHTML = '<div class="ftv-op-hint">No images available. Make sure collections are selected above.</div>';
       return;
     }
-    const atMax = this._slideshowSelected.size >= this._slideshowMaxUploads;
     const { file: _curFile } = this._getSelectedData();
     const _standby = !_curFile || ['standby.png','unknown','unavailable','none',''].includes(String(_curFile).trim().toLowerCase());
     const locked = this._slideshowUploading || this._slideshowUserRefreshPending || this._slideshowClearRefreshPending || (_standby && this._slideshowMode !== 'override');
     const basePath = this._getBaseImagePath();
-    // Group unselected by artist/folder
-    const groups = {};
+    const CAROUSEL_PAGE = 4;
+    if (!this._carouselOffsets) this._carouselOffsets = {};
+
+    // Group ALL images (selected + unselected together) by collection key.
+    const collMap = new Map();
     for (const img of this._slideshowAvailable) {
-      if (this._slideshowSelected.has(img.path)) continue;
       const key = (img.artist && img.artist.trim()) ? img.artist.trim() : (img.folder || 'Unknown');
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(img);
+      if (!collMap.has(key)) collMap.set(key, []);
+      collMap.get(key).push(img);
     }
-    let html = '';
-    // Selected section first
+    // Synthesize entries for selected paths beyond the 500-cap.
+    const _availPathSet = new Set(this._slideshowAvailable.map(img => img.path));
+    for (const path of this._slideshowSelected) {
+      if (!_availPathSet.has(path)) {
+        const lastSlash = path.lastIndexOf('/');
+        const folder = lastSlash > 0 ? path.substring(0, lastSlash) : '';
+        const file = lastSlash >= 0 ? path.substring(lastSlash + 1) : path;
+        const img = { path, folder, file, title: '', artist: folder, year: '', uploaded: false };
+        const key = folder || 'Unknown';
+        if (!collMap.has(key)) collMap.set(key, []);
+        collMap.get(key).push(img);
+      }
+    }
+    const sortedKeys = [...collMap.keys()].sort((a, b) => a.localeCompare(b));
+
+    const thumbHtml = (img) => {
+      const isSel = this._slideshowSelected.has(img.path);
+      const url = `${basePath}/${encodeURIComponent(img.folder)}/${encodeURIComponent(img.file)}`;
+      return `<div class="ftv-op-thumb${isSel ? ' selected' : ''}${locked ? ' disabled' : ''}" data-path="${this._escapeHtml(img.path)}"><img data-src="${url}" alt="" onerror="this.style.display='none'"><div class="ftv-op-check">${isSel ? '&#10003;' : ''}</div></div>`;
+    };
+
+    // Selected overview at top (flat, no pagination)
     const selectedImgs = this._slideshowAvailable.filter(img => this._slideshowSelected.has(img.path));
+    for (const path of this._slideshowSelected) {
+      if (!_availPathSet.has(path)) {
+        const lastSlash = path.lastIndexOf('/');
+        const folder = lastSlash > 0 ? path.substring(0, lastSlash) : '';
+        const file = lastSlash >= 0 ? path.substring(lastSlash + 1) : path;
+        selectedImgs.push({ path, folder, file, title: '', artist: folder, year: '', uploaded: false });
+      }
+    }
+
+    let html = '';
     if (selectedImgs.length) {
-      html += `<div class="ftv-op-section">Selected (${selectedImgs.length})</div>`;
-      for (const img of selectedImgs) {
-        const url = `${basePath}/${encodeURIComponent(img.folder)}/${encodeURIComponent(img.file)}`;
-        html += `<div class="ftv-op-thumb selected${locked ? ' disabled' : ''}" data-path="${this._escapeHtml(img.path)}"><img src="${url}" loading="${this._config.preload_thumbnails ? 'eager' : 'lazy'}" alt="" onerror="this.style.display='none'"><div class="ftv-op-check">&#10003;</div></div>`;
-      }
+      html += `<div class="ftv-coll-row">
+        <div class="ftv-coll-header open" data-body="ftv-cc-sel">
+          <span class="ftv-chevron">&#9654;</span>Selected (${selectedImgs.length})
+        </div>
+        <div class="ftv-coll-body" id="ftv-cc-sel">${selectedImgs.map(thumbHtml).join('')}</div>
+      </div>`;
     }
-    // Remaining grouped by artist
-    for (const [groupName, images] of Object.entries(groups).sort(([a], [b]) => a.localeCompare(b))) {
-      html += `<div class="ftv-op-section">${this._escapeHtml(groupName)}</div>`;
-      for (const img of images) {
-        const url = `${basePath}/${encodeURIComponent(img.folder)}/${encodeURIComponent(img.file)}`;
-        const isDisabled = atMax || locked;
-        html += `<div class="ftv-op-thumb${isDisabled ? ' disabled' : ''}" data-path="${this._escapeHtml(img.path)}"><img src="${url}" loading="${this._config.preload_thumbnails ? 'eager' : 'lazy'}" alt="" onerror="this.style.display='none'"><div class="ftv-op-check"></div></div>`;
+
+    sortedKeys.forEach((key, idx) => {
+      const images = collMap.get(key);
+      const selCount = images.filter(img => this._slideshowSelected.has(img.path)).length;
+      const total = images.length;
+      let offset = this._carouselOffsets[key];
+      if (offset === undefined) {
+        if (selCount > 0) {
+          const firstSelIdx = images.findIndex(img => this._slideshowSelected.has(img.path));
+          offset = Math.floor(firstSelIdx / CAROUSEL_PAGE) * CAROUSEL_PAGE;
+        } else {
+          offset = 0;
+        }
       }
-    }
+      const maxOffset = Math.max(0, Math.floor((total - 1) / CAROUSEL_PAGE) * CAROUSEL_PAGE);
+      offset = Math.max(0, Math.min(offset, maxOffset));
+      this._carouselOffsets[key] = offset;
+      const pageEnd = Math.min(offset + CAROUSEL_PAGE, total);
+      const bodyId = `ftv-cc-${idx}`;
+      html += `<div class="ftv-coll-row">
+        <div class="ftv-coll-header open" data-body="${bodyId}">
+          <span class="ftv-chevron">&#9654;</span>
+          ${this._escapeHtml(key)}
+          ${selCount > 0 ? `<span class="ftv-coll-sel-badge">${selCount} &#10003;</span>` : ''}
+          <div class="ftv-coll-nav">
+            <button class="ftv-coll-nav-btn" data-key="${this._escapeHtml(key)}" data-dir="-1"${offset > 0 ? '' : ' disabled'}>&#9664;</button>
+            <span class="ftv-coll-page-lbl">${offset + 1}&#8211;${pageEnd}&nbsp;/&nbsp;${total}</span>
+            <button class="ftv-coll-nav-btn" data-key="${this._escapeHtml(key)}" data-dir="1"${pageEnd < total ? '' : ' disabled'}>&#9654;</button>
+          </div>
+        </div>
+        <div class="ftv-coll-body" id="${bodyId}">${images.slice(offset, pageEnd).map(thumbHtml).join('')}</div>
+      </div>`;
+    });
+
     grid.innerHTML = html;
+
+    // Intersection-based lazy loading within the popup scroll container
+    if (this._carouselObserver) { this._carouselObserver.disconnect(); this._carouselObserver = null; }
+    const _lzRoot = this.querySelector('.ftv-override-popup');
+    if (_lzRoot && 'IntersectionObserver' in window) {
+      this._carouselObserver = new IntersectionObserver((entries) => {
+        entries.forEach(e => {
+          if (e.isIntersecting && e.target.dataset.src) {
+            e.target.src = e.target.dataset.src;
+            delete e.target.dataset.src;
+            this._carouselObserver.unobserve(e.target);
+          }
+        });
+      }, { root: _lzRoot, rootMargin: '100px' });
+      grid.querySelectorAll('img[data-src]').forEach(img => this._carouselObserver.observe(img));
+    } else {
+      grid.querySelectorAll('img[data-src]').forEach(img => { img.src = img.dataset.src; delete img.dataset.src; });
+    }
+
+    // Collapsible collection headers
+    grid.querySelectorAll('.ftv-coll-header').forEach(hdr => {
+      hdr.addEventListener('click', e => {
+        if (e.target.closest('.ftv-coll-nav')) return;
+        const body = document.getElementById(hdr.dataset.body);
+        const open = hdr.classList.toggle('open');
+        if (body) body.classList.toggle('collapsed', !open);
+      });
+    });
+
+    // Carousel prev/next navigation
+    grid.querySelectorAll('.ftv-coll-nav-btn:not([disabled])').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const key = btn.dataset.key;
+        const dir = parseInt(btn.dataset.dir, 10);
+        const images = collMap.get(key) || [];
+        const cur = this._carouselOffsets[key] || 0;
+        const maxOff = Math.max(0, Math.floor((images.length - 1) / CAROUSEL_PAGE) * CAROUSEL_PAGE);
+        this._carouselOffsets[key] = Math.max(0, Math.min(cur + dir * CAROUSEL_PAGE, maxOff));
+        this._renderOverrideGrid();
+      });
+    });
+
     if (!locked) {
       grid.querySelectorAll('.ftv-op-thumb').forEach(el => {
         el.addEventListener('click', () => {
@@ -2198,8 +2322,18 @@ class FrameTVArtCard extends HTMLElement {
           if (this._slideshowSelected.has(path)) {
             this._slideshowSelected.delete(path);
           } else {
-            if (this._slideshowSelected.size >= this._slideshowMaxUploads) return;
             this._slideshowSelected.add(path);
+          }
+          const newCount = this._slideshowSelected.size;
+          if (newCount > 0) {
+            this._slideshowMaxUploads = newCount;
+            const opMaxEl = this.querySelector('#ftv-op-max');
+            if (opMaxEl && !opMaxEl.dataset.dirty) opMaxEl.value = newCount;
+          }
+          if (this._slideshowPreviewMode) {
+            this._slideshowPreviewMode = false;
+            const shufBtn = this.querySelector('#ftv-op-shuffle');
+            if (shufBtn) shufBtn.textContent = '\u267B Shuffle';
           }
           this._renderOverrideGrid();
         });
@@ -2210,6 +2344,8 @@ class FrameTVArtCard extends HTMLElement {
   _selectionMatchesBaseline() {
     // After clearing override: empty grid is the correct post-clear state — treat as in-sync.
     if (this._slideshowPostClear) return true;
+    // A shuffle preview is by definition different from the committed baseline.
+    if (this._slideshowPreviewMode) return false;
     const baseline = this._slideshowMode === 'override' ? this._slideshowOverridePaths : this._slideshowCurrentPaths;
     // overridePaths empty while mode=override means the server hasn't confirmed the
     // applied paths yet — treat as in-sync so Apply stays disabled during that window.
@@ -2227,11 +2363,9 @@ class FrameTVArtCard extends HTMLElement {
     if (counterEl) counterEl.textContent = `${count} / ${this._slideshowMaxUploads} selected`;
     const applyBtn = this.querySelector('#ftv-op-apply');
     if (applyBtn) {
-      applyBtn.textContent = this._slideshowMode === 'override' ? 'Update Override' : 'Apply Override';
+      applyBtn.textContent = 'Apply';
       applyBtn.disabled = count === 0 || this._slideshowUploading || this._selectionMatchesBaseline();
     }
-    const clearBtn = this.querySelector('#ftv-op-clear');
-    if (clearBtn) clearBtn.style.display = this._slideshowMode === 'override' ? '' : 'none';
     const warnEl = this.querySelector('#ftv-op-warn');
     if (warnEl) {
       const { file: _wf } = this._getSelectedData();

@@ -149,35 +149,34 @@
     .sl-switch input:checked + .sl-slider { background: #2f7fbf; border-color: #2f7fbf; }
     .sl-switch input:checked + .sl-slider::before { transform: translateX(20px); background: #fff; }
 
-    /* Thumbnail grid */
-    .sl-grid {
+    /* Thumbnail grid — per-collection carousel layout */
+    .sl-grid { display: block; margin-top: 10px; }
+    .sl-coll-row { margin-bottom: 2px; }
+    .sl-coll-header {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase;
+      color: #b6aba4; padding: 6px 2px 4px;
+      border-bottom: 1px solid #3a2f2a; margin-top: 8px;
+    }
+    .sl-coll-row:first-child .sl-coll-header { margin-top: 0; }
+    .sl-coll-sel-badge {
+      font-size: 10px; font-weight: normal; text-transform: none; letter-spacing: 0;
+      color: #6ab0f5; background: rgba(47,127,191,0.18); border-radius: 10px; padding: 1px 6px;
+    }
+    .sl-coll-nav { margin-left: auto; display: flex; align-items: center; gap: 4px; font-weight: normal; text-transform: none; letter-spacing: 0; }
+    .sl-coll-nav-btn {
+      background: rgba(255,255,255,0.08); border: 1px solid #3a2f2a; color: #ccc;
+      width: 22px; height: 22px; border-radius: 4px; cursor: pointer; font-size: 10px;
+      display: inline-flex; align-items: center; justify-content: center; padding: 0; line-height: 1;
+    }
+    .sl-coll-nav-btn:disabled { opacity: 0.3; cursor: default; }
+    .sl-coll-page-lbl { font-size: 10px; color: rgba(255,255,255,0.35); min-width: 56px; text-align: center; }
+    .sl-coll-body {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(var(--sl-min, 130px), 1fr));
-      gap: 10px;
-      margin-top: 10px;
+      grid-template-columns: repeat(var(--sl-cols, 3), 1fr);
+      gap: 10px; padding: 8px 0 4px;
     }
-    .sl-section-header {
-      grid-column: 1 / -1;
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.5px;
-      text-transform: uppercase;
-      color: #b6aba4;
-      padding: 6px 2px 4px;
-      border-bottom: 1px solid #3a2f2a;
-      margin-top: 4px;
-      cursor: pointer;
-      user-select: none;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .sl-section-header:first-child { margin-top: 0; }
-    .sl-chevron { font-size: 9px; transition: transform 0.15s; display: inline-block; flex-shrink: 0; }
-    .sl-section-header.open .sl-chevron { transform: rotate(90deg); }
-    .sl-section-count { font-size: 10px; margin-left: auto; font-weight: normal; text-transform: none; letter-spacing: 0; }
-    .sl-section-body { display: contents; }
-    .sl-section-body.collapsed { display: none; }
+
     .sl-thumb {
       position: relative; border-radius: 8px; overflow: hidden; cursor: pointer;
       border: 2px solid transparent; background: #0d0c0b;
@@ -196,20 +195,14 @@
       transition: background 0.15s, border-color 0.15s;
     }
     .sl-thumb.selected .sl-thumb-check { background: #2f7fbf; border-color: #2f7fbf; }
-    /* Size slider */
-    .sl-size-slider {
-      -webkit-appearance: none; appearance: none;
-      width: 90px; height: 4px; border-radius: 2px;
-      background: #4a3d37; outline: none; cursor: pointer;
+    /* Size button group */
+    .sl-size-btns { display: flex; gap: 3px; }
+    .sl-size-btn {
+      padding: 4px 9px; font-size: 11px; font-weight: 600;
+      background: rgba(255,255,255,0.07); border: 1px solid #3a2f2a;
+      color: #b6aba4; border-radius: 5px; cursor: pointer;
     }
-    .sl-size-slider::-webkit-slider-thumb {
-      -webkit-appearance: none; width: 14px; height: 14px;
-      border-radius: 50%; background: #2f7fbf; cursor: pointer;
-    }
-    .sl-size-slider::-moz-range-thumb {
-      width: 14px; height: 14px; border: none;
-      border-radius: 50%; background: #2f7fbf; cursor: pointer;
-    }
+    .sl-size-btn.active { background: rgba(47,127,191,0.3); border-color: #2f7fbf; color: #6ab0f5; }
 
     /* Dropdown multi-select styling (aligns with HA card visuals) */
     .ftv-controls { border-radius: 8px; }
@@ -235,10 +228,6 @@
     .ftv-apply { background: #2f7fbf; }
     .ftv-clear { background: #8b3a3a; }
     .ftv-apply svg, .ftv-clear svg { width: 22px; height: 22px; fill: #fff; display: block; }
-    #refresh { width: 40px; height: 40px; border: none; border-radius: 8px; display: flex; align-items: center; justify-content: center; background: #4a6fa5; }
-    #refresh svg { width: 22px; height: 22px; fill: #fff; display: block; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    #refresh.spinning svg { animation: spin 0.8s linear infinite; transform-origin: center; }
     @keyframes ftvApplyPulse {
       0%, 100% { background: #2f7fbf; }
       50% { background: #d4920a; }
@@ -251,7 +240,6 @@
     @media (max-width: 600px) {
       #viewSlideshow .ftv-row { flex-wrap: wrap; }
       #viewSlideshow .ftv-dropdown-wrap { flex: 1 1 100%; }
-      #viewSlideshow #refresh,
       #viewSlideshow .ftv-apply,
       #viewSlideshow .ftv-clear {
         /* Let buttons distribute evenly on the same line regardless of count */
@@ -363,9 +351,6 @@
                   </div>
                   <div class="ftv-dropdown" id="ftv-dropdown"></div>
                 </div>
-                <button id="refresh" class="ftv-apply" title="Refresh uploads">
-                  <svg viewBox="0 0 24 24"><path d="M12,6V9L16,5L12,1V4C7.58,4 4,7.58 4,12C4,13.85 4.63,15.55 5.69,16.88L7.1,15.47C6.41,14.53 6,13.32 6,12C6,8.69 8.69,6 12,6M18.31,7.12L16.9,8.53C17.59,9.47 18,10.68 18,12C18,15.31 15.31,18 12,18V15L8,19L12,23V20C16.42,20 20,16.42 20,12C20,10.15 19.37,8.45 18.31,7.12Z"/></svg>
-                </button>
                 <button class="ftv-apply" id="apply" title="Apply" disabled style="display:none;">
                   <svg viewBox="0 0 24 24"><path d="M9,20.42L2.79,14.21L5.62,11.38L9,14.77L18.88,4.88L21.71,7.71L9,20.42Z"/></svg>
                 </button>
@@ -389,13 +374,17 @@
           <!-- Override panel -->
           <div id="sl-override-panel" style="margin-top:14px;">
             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-              <span id="sl-counter" class="hint">0 / 10 selected</span>
+              <span id="sl-counter" class="hint">0 selected</span>
               <span id="sl-mode-badge" class="hint"></span>
               <div style="display:flex; align-items:center; gap:10px;">
-                <input type="range" id="sl-size" class="sl-size-slider" min="80" max="260" value="130" title="Thumbnail size">
+                <div class="sl-size-btns">
+                  <button class="sl-size-btn" data-size="s">S</button>
+                  <button class="sl-size-btn active" data-size="m">M</button>
+                  <button class="sl-size-btn" data-size="l">L</button>
+                </div>
                 <button id="sl-override-reset" style="display:none; padding:8px 14px; width:auto; height:auto;">Reset</button>
-                <button id="sl-override-apply" class="ftv-apply" disabled style="opacity:0.6; padding:8px 14px; width:auto; height:auto;">Apply Override</button>
-                <button id="sl-override-clear" class="ftv-clear" style="display:none; padding:8px 14px; width:auto; height:auto;">Clear Override</button>
+                <button id="sl-preview-shuffle" style="padding:8px 14px; width:auto; height:auto;" title="Preview a random selection without uploading">&#127922; Shuffle</button>
+                <button id="sl-override-apply" class="ftv-apply" disabled style="opacity:0.6; padding:8px 14px; width:auto; height:auto;">Apply</button>
               </div>
             </div>
             <div id="sl-uploading-warn" style="display:none; padding:6px 0 0; font-size:0.8em; color:#ffb400;">
@@ -637,7 +626,7 @@
                   const paths = slideshowMode === 'override' ? slideshowOverridePaths : slideshowCurrentPaths;
                   const seed = paths.filter(p => availPathSet.has(p));
                   if (seed.length) { slideshowSelected = new Set(seed); slideshowPostClear = false; }
-                } else {
+                } else if (!slideshowPreviewMode) {
                   // Prune any ghost selections that were carried over from a previous available list
                   slideshowSelected = new Set([...slideshowSelected].filter(p => availPathSet.has(p)));
                 }
@@ -707,6 +696,22 @@
                 const $m = document.getElementById('sl-msg');
                 if ($m) { $m.textContent = status === 'ok' ? 'Override cleared. Auto mode restored.' : `Error: ${ack.message||'unknown'}`; setTimeout(()=>{ if($m) $m.textContent=''; },5000); }
               }
+              if (cmd === 'slideshow/preview/request') {
+                slideshowShuffling = false;
+                const $btn = document.getElementById('sl-preview-shuffle');
+                if ($btn) { $btn.disabled = false; $btn.textContent = '\u267B Shuffle Again'; }
+                if (status === 'ok' && Array.isArray(ack.paths) && ack.paths.length) {
+                  slideshowPreviewMode = true;
+                  slideshowSelected = new Set(ack.paths);
+                  const $badge = document.getElementById('sl-mode-badge');
+                  if ($badge) { $badge.textContent = '\u25CF Preview'; $badge.style.color = '#d4920a'; }
+                  updateSlCounter();
+                  renderSlideshowGrid();
+                } else {
+                  const $m = document.getElementById('sl-msg');
+                  if ($m) { $m.textContent = 'Preview returned no images.'; setTimeout(()=>{ if($m) $m.textContent=''; },4000); }
+                }
+              }
               setTimeout(() => { if ($envMsg.textContent) $envMsg.textContent=''; }, 8000);
             } catch (e) { /* ignore */ }
           }
@@ -731,7 +736,7 @@
     const TOPIC_SLIDESHOW_AVAIL = 'frame_tv/slideshow/available';
     const TOPIC_LOG = 'frame_tv/log';
     const TOPIC_CMD_PREFIX = 'frame_tv/cmd';
-    const $refresh = document.getElementById('refresh');
+    const $refresh = null; // Refresh button removed — covered by Shuffle + Apply
     const TOPIC_ACK_PREFIX = 'frame_tv/ack';
 
     const $trigger = document.getElementById('ftv-trigger');
@@ -1120,18 +1125,6 @@
         $tr.classList.remove('open');
         $dd.classList.remove('open');
       });
-    }
-    if ($refresh) {
-      $refresh.onclick = () => {
-        if ($refresh.disabled) return;
-        $refresh.classList.add('spinning');
-        $refresh.disabled = true;
-        $refresh.style.opacity = '0.7';
-        slideshowUserRefreshPending = true;
-        updateButtons();
-        updateGridLock();
-        client.publish(`${TOPIC_CMD_PREFIX}/collections/refresh`, JSON.stringify({ req_id: Date.now() }), { qos: 1, retain: false });
-      };
     }
     if ($apply) {
       $apply.onclick = () => {
@@ -1547,12 +1540,22 @@
     const $slOClear    = document.getElementById('sl-override-clear');
     const $slGrid      = document.getElementById('sl-grid');
     const $slGridHint  = document.getElementById('sl-grid-hint');
-    const $slSize      = document.getElementById('sl-size');
-    if ($slSize && $slGrid) {
-      $slSize.addEventListener('input', () => {
-        $slGrid.style.setProperty('--sl-min', $slSize.value + 'px');
+
+    // S/M/L size presets: [columns per carousel page]
+    const SL_SIZE_PRESETS = { s: 4, m: 3, l: 2 };
+    let slideshowCarouselCols = 3; // columns = items per carousel page
+    const $sizeBtns = document.querySelectorAll('.sl-size-btn');
+    $sizeBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        $sizeBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        slideshowCarouselCols = SL_SIZE_PRESETS[btn.dataset.size] || 6;
+        if ($slGrid) $slGrid.style.setProperty('--sl-cols', slideshowCarouselCols);
+        // Reset offsets so page indices stay valid at the new page size
+        slideshowCarouselOffsets = {};
+        renderSlideshowGrid();
       });
-    }
+    });
 
     let slideshowAvailable = [];
     let slideshowCurrentPaths = [];
@@ -1570,6 +1573,7 @@
     let slideshowPostClear = false;              // blocks size===0 reseed from stale current_paths after clear
     let slideshowClearRefreshPending = false;    // set when Clear fires collections/refresh
     let slideshowUserRefreshPending = false;     // set when user clicks Apply (collections) or Refresh
+    let slideshowPreviewMode = false;            // set when a shuffle preview has been loaded into the grid
 
     function updateSlideshowState(data) {
       try {
@@ -1589,13 +1593,9 @@
         slideshowMode = mode;
         const isOverride = mode === 'override';
         const modeChangedToAuto = prevMode === 'override' && !isOverride;
-        const $badge = document.getElementById('sl-mode-badge');
-        if ($badge) { $badge.textContent = isOverride ? '● Override active' : ''; $badge.style.color = '#2f7fbf'; }
         // Cancel any pending feedback timers and let MQTT immediately own the button state
         if ($slOApply && $slOApply._restoreTimer) { clearTimeout($slOApply._restoreTimer); $slOApply._restoreTimer = null; $slOApply._applying = false; }
-        if ($slOClear && $slOClear._restoreTimer) { clearTimeout($slOClear._restoreTimer); $slOClear._restoreTimer = null; }
-        if ($slOApply) { $slOApply.textContent = isOverride ? 'Update Override' : 'Apply Override'; $slOApply.style.opacity = ''; }
-        if ($slOClear) { $slOClear.style.display = isOverride ? '' : 'none'; $slOClear.textContent = 'Clear Override'; $slOClear.disabled = false; }
+        if ($slOApply) { $slOApply.textContent = 'Apply'; $slOApply.style.opacity = ''; }
         // Seed selection:
         //   - modeChangedToAuto: clear fired. current_paths is stale (all ever-uploaded).
         //     Always postClear=true. Keep existing selection visible if upload in progress.
@@ -1606,6 +1606,9 @@
         if (modeChangedToAuto) {
           // Override just cleared. current_paths is stale (union of all ever-uploaded files).
           // Always set postClear to block any reseed from it — grid should stay empty.
+          slideshowPreviewMode = false;
+          const $shuf = document.getElementById('sl-preview-shuffle');
+          if ($shuf && !slideshowShuffling) $shuf.textContent = '\u267B Shuffle';
           slideshowPostClear = true;
           if (slideshowUploading) {
             // Upload already in progress: keep existing selection visible (locked) during the cycle.
@@ -1619,6 +1622,9 @@
           slideshowPostClear = false;
           slideshowReverting = false;
         } else if (uploadJustFinished) {
+          slideshowPreviewMode = false;
+          const $shuf = document.getElementById('sl-preview-shuffle');
+          if ($shuf && !slideshowShuffling) $shuf.textContent = '\u267B Shuffle';
           schedulePostUploadAvailableRefresh(5);
           slideshowReverting = false;
           if (isOverride) {
@@ -1641,9 +1647,11 @@
             slideshowUserRefreshPending = true;
           }
         } else if (isOverride && !slideshowUploading && !slideshowPostClear
-            && slideshowOverridePaths.length) {
+            && slideshowOverridePaths.length && !slideshowPreviewMode) {
           // Mode unchanged, override active: resync from server-authoritative override_paths
           // (handles server-side pruning of deleted files from override state).
+          // Guard !slideshowPreviewMode so a shuffle preview is never clobbered by a
+          // periodic SLIDESHOW_STATE message arriving after the ack is processed.
           slideshowSelected = new Set(slideshowOverridePaths);
         } else if (!slideshowReverting && !slideshowPostClear && slideshowSelected.size === 0 && !slideshowUploading) {
           // Initial load or settled state: seed from appropriate paths.
@@ -1682,7 +1690,7 @@
         $warn.textContent = slideshowUploading ? '\u26a0 Uploading \u2014 grid locked' : slideshowUserRefreshPending ? '\u26a0 Applying \u2014 grid locked' : '\u26a0 Standby \u2014 grid locked';
       }
       if ($slGrid) { $slGrid.style.pointerEvents = locked ? 'none' : ''; $slGrid.style.opacity = locked ? '0.45' : ''; }
-      if ($slOApply && locked) { $slOApply.disabled = true; $slOApply.style.opacity = 0.4; }
+      if ($slOApply && locked && !slideshowPreviewMode) { $slOApply.disabled = true; $slOApply.style.opacity = 0.4; }
       if ($slOReset && locked) $slOReset.style.display = 'none';
     }
 
@@ -1700,6 +1708,8 @@
     function selectionMatchesBaseline() {
       // After clearing override: empty grid is the correct post-clear state — treat as in-sync.
       if (slideshowPostClear) return true;
+      // A shuffle preview is by definition different from the committed baseline.
+      if (slideshowPreviewMode) return false;
       const baseline = slideshowMode === 'override' ? slideshowOverridePaths : slideshowCurrentPaths;
       // overridePaths empty while mode=override means the server hasn't confirmed the
       // applied paths yet — treat as in-sync so Apply stays disabled during that window.
@@ -1711,7 +1721,7 @@
     function updateSlCounter() {
       if (!$slCounter) return;
       const count = slideshowSelected.size;
-      $slCounter.textContent = `${count} / ${slideshowMaxUploads} selected`;
+      $slCounter.textContent = `${count} selected`;
       if ($slOApply) {
         const canApply = count > 0 && !slideshowUploading && !selectionMatchesBaseline();
         $slOApply.disabled = !canApply;
@@ -1740,8 +1750,14 @@
       for (let i = 0; i < Math.min(CONCURRENCY, urls.length); i++) next();
     }
 
+    const CAROUSEL_PAGE = 3; // base value; at runtime slideshowCarouselCols overrides this
+    let slideshowCarouselOffsets = {};
+    let _carouselObserver = null;
+
     function renderSlideshowGrid() {
       if (!$slGrid) return;
+      const COLS = (typeof slideshowCarouselCols !== 'undefined') ? slideshowCarouselCols : CAROUSEL_PAGE;
+      $slGrid.style.setProperty('--sl-cols', COLS);
       updateSlCounter();
       if (!slideshowAvailable.length) {
         $slGrid.innerHTML = '';
@@ -1749,61 +1765,152 @@
         return;
       }
       if ($slGridHint) $slGridHint.textContent = `${slideshowAvailable.length} image(s) in selected collections`;
-      const atMax = slideshowSelected.size >= slideshowMaxUploads;
+
+      const availPathSet = new Set(slideshowAvailable.map(img => img.path));
+
+      // Group ALL images (selected + unselected together) by collection key.
+      const collMap = new Map();
+      for (const img of slideshowAvailable) {
+        const key = (img.artist && img.artist.trim()) ? img.artist.trim() : (img.folder || 'Unknown');
+        if (!collMap.has(key)) collMap.set(key, []);
+        collMap.get(key).push(img);
+      }
+      // Synthesize entries for selected paths beyond the 500-cap so they appear in their collection.
+      for (const path of slideshowSelected) {
+        if (!availPathSet.has(path)) {
+          const lastSlash = path.lastIndexOf('/');
+          const folder = lastSlash > 0 ? path.substring(0, lastSlash) : '';
+          const file = lastSlash >= 0 ? path.substring(lastSlash + 1) : path;
+          const img = { path, folder, file, title: '', artist: folder, year: '', uploaded: false };
+          const key = folder || 'Unknown';
+          if (!collMap.has(key)) collMap.set(key, []);
+          collMap.get(key).push(img);
+        }
+      }
+      const sortedKeys = [...collMap.keys()].sort((a, b) => a.localeCompare(b));
 
       function thumbHtml(img) {
-        const isSelected = slideshowSelected.has(img.path);
-        const isDisabled = !isSelected && atMax;
+        const isSel = slideshowSelected.has(img.path);
         const thumbUrl = `${location.origin}/app/frame_tv_art_collections/${encodeURIComponent(img.folder)}/${encodeURIComponent(img.file)}`;
-        return `<div class="sl-thumb${isSelected ? ' selected' : ''}${isDisabled ? ' disabled' : ''}" data-path="${escapeHtml(img.path)}">
-          <img src="${thumbUrl}" loading="${preloadEnabled ? 'eager' : 'lazy'}" alt="${escapeHtml(img.title || img.file)}" onerror="this.style.display='none'">
-          <div class="sl-thumb-check">${isSelected ? '\u2713' : ''}</div>
+        return `<div class="sl-thumb${isSel ? ' selected' : ''}" data-path="${escapeHtml(img.path)}">
+          <img data-src="${thumbUrl}" alt="${escapeHtml(img.title || img.file)}" onerror="this.style.display='none'">
+          <div class="sl-thumb-check">${isSel ? '\u2713' : ''}</div>
         </div>`;
       }
 
-      let sectionIdx = 0;
-      function sectionHtml(label, images, expanded) {
-        const bodyId = `sl-body-${sectionIdx++}`;
-        return `<div class="sl-section-header${expanded ? ' open' : ''}" data-body="${bodyId}">
-          <span class="sl-chevron">&#9654;</span>${escapeHtml(label)}<span class="sl-section-count hint">${images.length}</span>
-        </div>
-        <div class="sl-section-body${expanded ? '' : ' collapsed'}" id="${bodyId}">${images.map(thumbHtml).join('')}</div>`;
+      // Build "Selected" summary section (all selected images flat, no pagination needed).
+      const selectedImgs = slideshowAvailable.filter(img => slideshowSelected.has(img.path));
+      for (const path of slideshowSelected) {
+        if (!availPathSet.has(path)) {
+          const lastSlash = path.lastIndexOf('/');
+          const folder = lastSlash > 0 ? path.substring(0, lastSlash) : '';
+          const file = lastSlash >= 0 ? path.substring(lastSlash + 1) : path;
+          selectedImgs.push({ path, folder, file, title: '', artist: folder, year: '', uploaded: false });
+        }
       }
 
-      const selected = slideshowAvailable.filter(img => slideshowSelected.has(img.path));
-      const unselected = slideshowAvailable.filter(img => !slideshowSelected.has(img.path));
-      const byArtist = {};
-      for (const img of unselected) {
-        const key = img.artist && img.artist.trim() ? img.artist.trim() : (img.folder || 'Unknown');
-        if (!byArtist[key]) byArtist[key] = [];
-        byArtist[key].push(img);
-      }
+      // Preserve scroll position across re-renders triggered by thumb toggles.
+      const $scrollEl = document.getElementById('viewSlideshow');
+      const savedScroll = $scrollEl ? $scrollEl.scrollTop : 0;
 
       let html = '';
-      if (selected.length) {
-        html += sectionHtml(`Selected (${selected.length})`, selected, true);
+      // Selected overview at top
+      if (selectedImgs.length) {
+        html += `<div class="sl-coll-row">
+          <div class="sl-coll-header" data-body="sl-cc-sel">
+            Selected (${selectedImgs.length})
+          </div>
+          <div class="sl-coll-body" id="sl-cc-sel">${selectedImgs.map(thumbHtml).join('')}</div>
+        </div>`;
       }
-      for (const [artist, images] of Object.entries(byArtist).sort(([a],[b]) => a.localeCompare(b))) {
-        html += sectionHtml(artist, images, true);
-      }
-      $slGrid.innerHTML = html;
+      // Per-collection carousels
+      sortedKeys.forEach((key, idx) => {
+        const images = collMap.get(key);
+        const selCount = images.filter(img => slideshowSelected.has(img.path)).length;
+        const total = images.length;
+        // Default offset: page containing the first selected image in this collection.
+        let offset = slideshowCarouselOffsets[key];
+        if (offset === undefined) {
+          if (selCount > 0) {
+            const firstSelIdx = images.findIndex(img => slideshowSelected.has(img.path));
+            offset = Math.floor(firstSelIdx / COLS) * COLS;
+          } else {
+            offset = 0;
+          }
+        }
+        const maxOffset = Math.max(0, Math.floor((total - 1) / COLS) * COLS);
+        offset = Math.max(0, Math.min(offset, maxOffset));
+        slideshowCarouselOffsets[key] = offset;
+        const pageEnd = Math.min(offset + COLS, total);
+        const bodyId = `sl-cc-${idx}`;
+        html += `<div class="sl-coll-row">
+          <div class="sl-coll-header" data-body="${bodyId}">
+            ${escapeHtml(key)}
+            ${selCount > 0 ? `<span class="sl-coll-sel-badge">${selCount} selected</span>` : ''}
+            <div class="sl-coll-nav">
+              <button class="sl-coll-nav-btn" data-key="${escapeHtml(key)}" data-dir="-1"${offset > 0 ? '' : ' disabled'}>&#9664;</button>
+              <span class="sl-coll-page-lbl">${offset + 1}&ndash;${pageEnd}&nbsp;/&nbsp;${total}</span>
+              <button class="sl-coll-nav-btn" data-key="${escapeHtml(key)}" data-dir="1"${pageEnd < total ? '' : ' disabled'}>&#9654;</button>
+            </div>
+          </div>
+          <div class="sl-coll-body" id="${bodyId}">${images.slice(offset, pageEnd).map(thumbHtml).join('')}</div>
+        </div>`;
+      });
 
-      // Wire collapsible headers
-      $slGrid.querySelectorAll('.sl-section-header').forEach(hdr => {
-        hdr.addEventListener('click', () => {
-          const body = document.getElementById(hdr.dataset.body);
-          const open = hdr.classList.toggle('open');
-          if (body) body.classList.toggle('collapsed', !open);
+      $slGrid.innerHTML = html;
+      if ($scrollEl) $scrollEl.scrollTop = savedScroll;
+
+      // Intersection-based lazy loading: only load images as they scroll into view
+      // within the slideshow panel. Falls back to eager if IntersectionObserver unavailable.
+      if (_carouselObserver) { _carouselObserver.disconnect(); _carouselObserver = null; }
+      const _lzRoot = document.getElementById('viewSlideshow');
+      if (_lzRoot && 'IntersectionObserver' in window) {
+        _carouselObserver = new IntersectionObserver((entries) => {
+          entries.forEach(e => {
+            if (e.isIntersecting && e.target.dataset.src) {
+              e.target.src = e.target.dataset.src;
+              delete e.target.dataset.src;
+              _carouselObserver.unobserve(e.target);
+            }
+          });
+        }, { root: _lzRoot, rootMargin: '150px' });
+        $slGrid.querySelectorAll('img[data-src]').forEach(img => _carouselObserver.observe(img));
+      } else {
+        $slGrid.querySelectorAll('img[data-src]').forEach(img => { img.src = img.dataset.src; delete img.dataset.src; });
+      }
+      // Carousel prev/next navigation
+      $slGrid.querySelectorAll('.sl-coll-nav-btn:not([disabled])').forEach(btn => {
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          const key = btn.dataset.key;
+          const dir = parseInt(btn.dataset.dir, 10);
+          const images = collMap.get(key) || [];
+          const cur = slideshowCarouselOffsets[key] || 0;
+          const maxOff = Math.max(0, Math.floor((images.length - 1) / COLS) * COLS);
+          slideshowCarouselOffsets[key] = Math.max(0, Math.min(cur + dir * COLS, maxOff));
+          renderSlideshowGrid();
         });
       });
 
+      // Thumb click: toggle selection
       $slGrid.querySelectorAll('.sl-thumb').forEach(el => {
         el.addEventListener('click', () => {
-          if (el.classList.contains('disabled')) return;
           if (slideshowUploading) return;
+          if (slideshowPreviewMode) {
+            slideshowPreviewMode = false;
+            const $shuf = document.getElementById('sl-preview-shuffle');
+            if ($shuf) $shuf.textContent = '\u267B Shuffle';
+            const $badge = document.getElementById('sl-mode-badge');
+            if ($badge) $badge.textContent = '';
+          }
           const path = el.dataset.path;
           if (slideshowSelected.has(path)) { slideshowSelected.delete(path); }
-          else { if (slideshowSelected.size >= slideshowMaxUploads) return; slideshowSelected.add(path); }
+          else { slideshowSelected.add(path); }
+          const newCount = slideshowSelected.size;
+          if (newCount > 0) {
+            slideshowMaxUploads = newCount;
+            if ($slMaxUploads && !$slMaxUploads.dataset.dirty) $slMaxUploads.value = newCount;
+          }
           updateSlCounter();
           renderSlideshowGrid();
         });
@@ -1833,22 +1940,30 @@
       $slOApply.onclick = () => {
         if (!client || !slideshowSelected.size) return;
         const paths = Array.from(slideshowSelected);
-        const origLabel = $slOApply.textContent;
         $slOApply.disabled = true;
         $slOApply._applying = true;
         $slOApply.textContent = 'Applying…';
         $slOApply.style.opacity = 0.7;
-        // If the collection dropdown has staged (unapplied) changes, include them
-        // in the same payload so both are committed atomically — no separate Apply
-        // (collections) click required.
+        const wasPreview = !!slideshowPreviewMode;
+        slideshowPreviewMode = false;
+        const $shuf = document.getElementById('sl-preview-shuffle');
+        if ($shuf) $shuf.textContent = '\u267B Shuffle';
+        const $badge2 = document.getElementById('sl-mode-badge');
+        if ($badge2) $badge2.textContent = '';
+        // Build payload; if selection differs from server-confirmed max, update it
         const payload = { paths, req_id: Date.now() };
+        if (paths.length !== slMaxUploadsBaseline) {
+          payload.max_uploads = paths.length;
+          slideshowMaxUploads = paths.length;
+          if ($slMaxUploads && !$slMaxUploads.dataset.dirty) $slMaxUploads.value = paths.length;
+        }
         if (dirty && staged.length) payload.collections = staged;
         client.publish(`${TOPIC_CMD_PREFIX}/slideshow/override/set`, JSON.stringify(payload), { qos: 1 });
         // Safety fallback only — MQTT response will cancel this and set state directly
         $slOApply._restoreTimer = setTimeout(() => {
           $slOApply._applying = false;
           $slOApply._restoreTimer = null;
-          $slOApply.textContent = slideshowMode === 'override' ? 'Update Override' : origLabel;
+          $slOApply.textContent = 'Apply';
           const canApply = slideshowSelected.size > 0 && !slideshowUploading && !selectionMatchesBaseline();
           $slOApply.disabled = !canApply;
           $slOApply.style.opacity = canApply ? 1 : 0.6;
@@ -1858,6 +1973,11 @@
 
     if ($slOReset) {
       $slOReset.onclick = () => {
+        slideshowPreviewMode = false;
+        const $badge = document.getElementById('sl-mode-badge');
+        if ($badge) $badge.textContent = '';
+        const $btn = document.getElementById('sl-preview-shuffle');
+        if ($btn) $btn.textContent = '\u267B Shuffle';
         const baseline = slideshowMode === 'override' ? slideshowOverridePaths : slideshowCurrentPaths;
         slideshowSelected = new Set(baseline);
         updateSlCounter();
@@ -1865,19 +1985,31 @@
       };
     }
 
-    if ($slOClear) {
-      $slOClear.onclick = () => {
+    let slideshowShuffling = false; // true while a preview request is in-flight
+
+    const $slShuffle = document.getElementById('sl-preview-shuffle');
+    if ($slShuffle) {
+      $slShuffle.onclick = () => {
         if (!client) return;
-        $slOClear.disabled = true;
-        $slOClear.textContent = 'Clearing…';
-        // Fire a full collections/refresh: clears override, prunes TV storage,
-        // and reseeds from current collections — guaranteeing current_paths is fresh.
-        slideshowClearRefreshPending = true;
-        client.publish(`${TOPIC_CMD_PREFIX}/collections/refresh`, JSON.stringify({ req_id: Date.now() }), { qos: 1 });
-        // Safety fallback — modeChangedToAuto MQTT response normally cancels this first
-        $slOClear._restoreTimer = setTimeout(() => { $slOClear._restoreTimer = null; $slOClear.disabled = false; $slOClear.textContent = 'Clear Override'; }, 8000);
+        slideshowShuffling = true;
+        $slShuffle.disabled = true;
+        $slShuffle.textContent = 'Shuffling\u2026';
+        const payload = { req_id: Date.now() };
+        // If the collection dropdown has staged (unapplied) changes, preview against those.
+        if (dirty && staged.length) payload.collections = staged;
+        client.publish(`${TOPIC_CMD_PREFIX}/slideshow/preview/request`, JSON.stringify(payload), { qos: 1 });
+        // Safety fallback — ack handler will re-enable; this covers lost messages
+        setTimeout(() => {
+          if ($slShuffle.disabled) {
+            slideshowShuffling = false;
+            $slShuffle.disabled = false;
+            $slShuffle.textContent = slideshowPreviewMode ? '\u267B Shuffle Again' : '\u267B Shuffle';
+          }
+        }, 20000);
       };
     }
+
+    // Clear Override button removed — use the top Refresh button to wipe and reseed the TV.
   </script>
 </body>
 </html>
