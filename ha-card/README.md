@@ -10,7 +10,7 @@ A custom [Home Assistant](https://www.home-assistant.io/) Lovelace card for cont
 
 > **Upgrading from v0.1.x?** See the [v0.2.0 release notes](https://github.com/kohlerryan/samsung-tv-art-card/releases/tag/v0.2.0) for breaking changes and what's new.
 
-> **Upgrading from v0.2.x?** See the [v0.2.3 release notes](https://github.com/kohlerryan/samsung-tv-art-card/releases/tag/v0.2.3) for what's new.
+> **Upgrading from v0.2.x?** See the [v0.3.0 release notes](https://github.com/kohlerryan/samsung-tv-art-card/releases/tag/v0.3.0) for what's new.
 
 ---
 
@@ -21,7 +21,8 @@ A custom [Home Assistant](https://www.home-assistant.io/) Lovelace card for cont
 
   ![Collection selector dropdown](images/hacard_collection_selection_v0.2.1.png)
 - **Slideshow controls** — popup panel to configure slideshow mode (random / sequential), rotation interval, and max uploads; includes an Apply button to push settings to the backend
-- **Manual override** — toggle to pause the automatic slideshow and hand-pick artwork from a grid of available images; toggle off to resume normal rotation
+- **Manual override** — hand-pick artwork from a per-collection carousel grid with S/M/L thumbnail size controls; Shuffle button previews a random set without committing it (a "● Preview" badge indicates the selection hasn't been applied yet); Apply pins the selection to the TV
+- **Saved Selections** — name and save any selection as a preset; presets are stored as a retained MQTT message so they sync across the web UI and all HA cards; includes one-click load, update, and delete. On first start the backend auto-generates thematic defaults (Landscapes, Marine, Impressionism, etc.) from your installed collections
 
   ![Slideshow controls popup and manual override grid](images/hacard_slideshow_v0.2.1.png)
 - **Not in art mode state** — when the TV is not in Art Mode the card collapses to a compact row showing the card title and a subtle "TV is not in art mode" label; controls are hidden until art mode resumes
@@ -60,7 +61,7 @@ A custom [Home Assistant](https://www.home-assistant.io/) Lovelace card for cont
    ```yaml
    lovelace:
      resources:
-         url: /local/samsung-tv-art-card/samsung-tv-art-card.js?v=v0.2.3
+         url: /local/samsung-tv-art-card/samsung-tv-art-card.js?v=v0.3.0
          type: module
    ```
 
@@ -129,4 +130,4 @@ layout_mode: dynamic
 
 ## Version
 
-Current version: **v0.2.3** — bump the `?v=` cache-buster in the resource URL whenever you upgrade.
+Current version: **v0.3.0** — bump the `?v=` cache-buster in the resource URL whenever you upgrade.
