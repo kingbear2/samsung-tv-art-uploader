@@ -93,6 +93,7 @@ class FrameTVArtCard extends HTMLElement {
       sync_ack_topic: config.sync_ack_topic || 'frame_tv/ack/settings/sync_collections',
       slideshow_attr_topic: config.slideshow_attr_topic || 'frame_tv/slideshow/attributes',
       slideshow_available_topic: config.slideshow_available_topic || 'frame_tv/slideshow/available',
+      slideshow_presets_topic: config.slideshow_presets_topic || 'frame_tv/slideshow/presets',
       // Optional: allow overriding legacy helpers if desired
       add_button_entity: config.add_button_entity, // legacy keys no longer used
       remove_button_entity: config.remove_button_entity, // legacy keys no longer used
@@ -193,11 +194,15 @@ class FrameTVArtCard extends HTMLElement {
     if (typeof this._slideshowAvailUnsubscribe === 'function') {
       try { this._slideshowAvailUnsubscribe(); } catch (_) {}
     }
+    if (typeof this._slideshowPresetsUnsub === 'function') {
+      try { this._slideshowPresetsUnsub(); } catch (_) {}
+    }
     this._refreshAckUnsubscribe = null;
     this._refreshCmdUnsubscribe = null;
     this._syncAckUnsubscribe = null;
     this._slideshowAttrsUnsubscribe = null;
     this._slideshowAvailUnsubscribe = null;
+    this._slideshowPresetsUnsub = null;
     this._refreshSubscribing = false;
     // Clean up document-level listener and polling timer
     if (this._docClickHandler) {
@@ -217,7 +222,7 @@ class FrameTVArtCard extends HTMLElement {
   _ensureRefreshSubscriptions() {
     if (!this._hass || !this._hass.connection) return;
     if (this._refreshSubscribing) return;
-    if (this._refreshAckUnsubscribe && this._refreshCmdUnsubscribe && this._syncAckUnsubscribe && this._slideshowAttrsUnsubscribe && this._slideshowAvailUnsubscribe && this._slideshowPreviewUnsub && this._logUnsubscribe) return;
+    if (this._refreshAckUnsubscribe && this._refreshCmdUnsubscribe && this._syncAckUnsubscribe && this._slideshowAttrsUnsubscribe && this._slideshowAvailUnsubscribe && this._slideshowPreviewUnsub && this._logUnsubscribe && this._slideshowPresetsUnsub) return;
     this._refreshSubscribing = true;
 
     const ensureAck = this._refreshAckUnsubscribe
@@ -280,8 +285,22 @@ class FrameTVArtCard extends HTMLElement {
           { type: 'mqtt/subscribe', topic: 'frame_tv/log' }
         );
 
-    Promise.all([ensureAck, ensureCmd, ensureSyncAck, ensureSlideshowAttrs, ensureSlideshowAvail, ensurePreviewAck, ensureLog])
-      .then(([ackUnsub, cmdUnsub, syncAckUnsub, slideshowAttrsUnsub, slideshowAvailUnsub, previewUnsub, logUnsub]) => {
+    const ensurePresets = this._slideshowPresetsUnsub
+      ? Promise.resolve(this._slideshowPresetsUnsub)
+      : this._hass.connection.subscribeMessage(
+          (msg) => {
+            try {
+              const raw = msg && (msg.payload || msg);
+              const arr = JSON.parse(typeof raw === 'string' ? raw : JSON.stringify(raw));
+              this._slideshowPresets = Array.isArray(arr) ? arr : [];
+            } catch(_) { this._slideshowPresets = []; }
+            this._renderPresets();
+          },
+          { type: 'mqtt/subscribe', topic: this._config.slideshow_presets_topic }
+        );
+
+    Promise.all([ensureAck, ensureCmd, ensureSyncAck, ensureSlideshowAttrs, ensureSlideshowAvail, ensurePreviewAck, ensureLog, ensurePresets])
+      .then(([ackUnsub, cmdUnsub, syncAckUnsub, slideshowAttrsUnsub, slideshowAvailUnsub, previewUnsub, logUnsub, presetsUnsub]) => {
         if (!this._refreshAckUnsubscribe) this._refreshAckUnsubscribe = ackUnsub;
         if (!this._refreshCmdUnsubscribe) this._refreshCmdUnsubscribe = cmdUnsub;
         if (!this._syncAckUnsubscribe) this._syncAckUnsubscribe = syncAckUnsub;
@@ -289,6 +308,7 @@ class FrameTVArtCard extends HTMLElement {
         if (!this._slideshowAvailUnsubscribe) this._slideshowAvailUnsubscribe = slideshowAvailUnsub;
         if (!this._slideshowPreviewUnsub) this._slideshowPreviewUnsub = previewUnsub;
         if (!this._logUnsubscribe) this._logUnsubscribe = logUnsub;
+        if (!this._slideshowPresetsUnsub) this._slideshowPresetsUnsub = presetsUnsub;
       })
       .catch(() => {})
       .finally(() => {
@@ -459,7 +479,7 @@ class FrameTVArtCard extends HTMLElement {
         // all uploaded files). Clear selection and block fallback reseeds until a cycle runs.
         this._slideshowPreviewMode = false;
         const _shufClear = this.querySelector('#ftv-op-shuffle');
-        if (_shufClear && !this._slideshowShuffling) _shufClear.textContent = '\u267B Shuffle';
+        if (_shufClear && !this._slideshowShuffling) _shufClear.textContent = 'Shuffle';
         this._slideshowPostClear = true;
         this._slideshowSelected = new Set();
         // Request a fresh available list so the grid repaints with nothing selected
@@ -485,7 +505,7 @@ class FrameTVArtCard extends HTMLElement {
           this._schedulePostUploadRefresh(5);
           this._slideshowPreviewMode = false;
           const _shufUpload = this.querySelector('#ftv-op-shuffle');
-          if (_shufUpload && !this._slideshowShuffling) _shufUpload.textContent = '\u267B Shuffle';
+          if (_shufUpload && !this._slideshowShuffling) _shufUpload.textContent = 'Shuffle';
           this._slideshowReverting = false;
           if (mode === 'override') {
             // Override upload completed: override_paths are confirmed by server.
@@ -567,7 +587,7 @@ class FrameTVArtCard extends HTMLElement {
     const status = String((payload && payload.status) || '').toLowerCase();
     this._slideshowShuffling = false;
     const shufBtn = this.querySelector('#ftv-op-shuffle');
-    if (shufBtn) { shufBtn.disabled = false; shufBtn.textContent = '\u267B Shuffle Again'; }
+    if (shufBtn) { shufBtn.disabled = false; shufBtn.textContent = 'Shuffle'; }
     if (status === 'ok' && Array.isArray(payload.paths) && payload.paths.length) {
       this._slideshowPreviewMode = true;
       this._slideshowSelected = new Set(payload.paths);
@@ -1493,6 +1513,71 @@ class FrameTVArtCard extends HTMLElement {
           .ftv-op-input { flex: 1; padding: 7px 8px; background: #2a2a2a; color: #f0f0f0; border: 1px solid #555; border-radius: 6px; font-size: 0.85em; min-width: 0; }
           .ftv-op-select { flex: 1.2; padding: 7px 8px; background: #2a2a2a; color: #f0f0f0; border: 1px solid #555; border-radius: 6px; font-size: 0.85em; }
           .ftv-op-btn.apply { background: #4a6fa5; color: #fff; }
+          .ftv-op-save-btn {
+            padding: 6px 12px; border: 1px solid #555; border-radius: 6px;
+            cursor: pointer; font-size: 0.85em; font-weight: 600;
+            background: rgba(255,255,255,0.07); color: rgba(255,255,255,0.55);
+          }
+          .ftv-op-save-btn:not([disabled]):hover { border-color: #2f7fbf; color: #8ac4f0; }
+          .ftv-op-save-btn[disabled] { opacity: 0.4; cursor: default; }
+          .ftv-presets-header {
+            display: flex; align-items: center; gap: 6px;
+            padding: 5px 14px 5px;
+            background: #1a1a1a;
+            border-top: 1px solid #333;
+            border-bottom: 1px solid #333;
+            position: sticky; top: 0; z-index: 1;
+          }
+          .ftv-presets-label {
+            font-size: 0.72em; font-weight: 700; color: rgba(255,255,255,0.38);
+            text-transform: uppercase; letter-spacing: 0.05em; margin-right: auto;
+          }
+          .ftv-presets-save-btn {
+            padding: 3px 9px !important; font-size: 0.75em !important;
+          }
+          .ftv-presets-clear {
+            padding: 3px 9px; font-size: 0.75em; font-weight: 600;
+            background: rgba(255,255,255,0.07); border: 1px solid #555;
+            color: rgba(255,255,255,0.55); border-radius: 6px; cursor: pointer;
+          }
+          .ftv-presets-clear:hover { border-color: #c04040; color: #ff8080; }
+          .ftv-presets-scroll {
+            max-height: 110px; overflow-y: auto;
+            padding: 6px 14px 4px;
+            border-bottom: 1px solid #333;
+          }
+          .ftv-presets {
+            display: flex; flex-wrap: wrap; gap: 5px;
+          }
+          .ftv-preset-chip {
+            position: relative; display: inline-flex; align-items: center;
+            padding: 3px 10px; font-size: 0.78em; border-radius: 10px;
+            background: rgba(47,127,191,0.15); border: 1px solid rgba(47,127,191,0.35);
+            color: #8ac4f0; cursor: pointer; white-space: nowrap; user-select: none;
+            margin: 5px 5px 1px;
+          }
+          .ftv-preset-chip:hover { background: rgba(47,127,191,0.28); border-color: #2f7fbf; }
+          .ftv-preset-chip.active {
+            background: rgba(42,157,92,0.15); border: 1px solid rgba(42,157,92,0.35);
+            color: #6ecf9a;
+          }
+          .ftv-preset-chip.active:hover { background: rgba(42,157,92,0.28); border-color: #2a9d5c; }
+          .ftv-preset-del {
+            position: absolute; top: -5px; right: -5px;
+            width: 13px; height: 13px; border-radius: 50%;
+            background: rgba(140,30,30,0.85); border: 1px solid #c04040;
+            color: #ffaaaa; font-size: 9px; line-height: 11px; text-align: center;
+            display: none; cursor: pointer; z-index: 1;
+          }
+          .ftv-preset-chip:hover .ftv-preset-del { display: block; }
+          .ftv-preset-upd {
+            position: absolute; top: -5px; left: -5px;
+            width: 13px; height: 13px; border-radius: 50%;
+            background: rgba(180,140,20,0.85); border: 1px solid #c9a820;
+            color: #fff8cc; font-size: 9px; line-height: 11px; text-align: center;
+            display: none; cursor: pointer; z-index: 1;
+          }
+          .ftv-preset-chip:not(.active):hover .ftv-preset-upd { display: block; }
           .ftv-op-toggle-row { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid #333; }
           .ftv-op-toggle-label { font-size: 0.9em; color: #f0f0f0; }
           .ftv-op-hint-text { font-size: 0.77em; color: rgba(255,255,255,0.38); padding: 0 14px 4px; }
@@ -1534,14 +1619,22 @@ class FrameTVArtCard extends HTMLElement {
               <div class="ftv-op-hint-text">Interval: minutes between changes (0=off). Max: artwork slots on TV.</div>
             </div>
             <div class="ftv-op-topbar">
-              <span class="ftv-op-counter" id="ftv-op-counter">0 / ${this._slideshowMaxUploads} selected</span>
               <div style="display:flex;gap:6px;">
                 <button class="ftv-op-btn" id="ftv-op-reset" style="display:none;">Reset</button>
-                <button class="ftv-op-btn" id="ftv-op-shuffle">&#x267B; Shuffle</button>
+                <button class="ftv-op-btn" id="ftv-op-shuffle">Shuffle</button>
                 <button class="ftv-op-btn primary" id="ftv-op-apply" disabled>Apply</button>
               </div>
             </div>
+            <div class="ftv-presets-header" id="ftv-presets-header">
+              <span class="ftv-presets-label">Saved Selections</span>
+              <button class="ftv-op-save-btn ftv-presets-save-btn" id="ftv-op-save" disabled title="Save current selection as a preset">Save New</button>
+              <button class="ftv-op-save-btn ftv-presets-save-btn" id="ftv-op-generate" title="Generate default saved selections from installed collections">Generate</button>
+              <button class="ftv-presets-clear" id="ftv-presets-clear" title="Clear all saved selections">Clear all</button>
+            </div>
             <div id="ftv-op-warn" class="ftv-op-warn" style="${(this._slideshowUploading || this._slideshowUserRefreshPending || this._slideshowClearRefreshPending) ? '' : 'display:none'}">${this._slideshowUploading ? '&#9888; Uploading \u2014 grid locked' : (this._slideshowUserRefreshPending || this._slideshowClearRefreshPending) ? '&#9888; Refreshing \u2014 grid locked' : '&#9888; Uploading \u2014 grid locked'}</div>
+            <div class="ftv-presets-scroll" id="ftv-presets-scroll">
+              <div class="ftv-presets" id="ftv-op-presets"></div>
+            </div>
             <div class="ftv-op-grid" id="ftv-op-grid"></div>
           </div>
           <div class="ftv-controls">
@@ -1750,6 +1843,7 @@ class FrameTVArtCard extends HTMLElement {
           }).catch(() => {});
         }
         this._renderOverrideGrid();
+        this._renderPresets();
         this._lastStateHash = this._getStateHash();
       }
     };
@@ -1793,7 +1887,7 @@ class FrameTVArtCard extends HTMLElement {
         e.stopPropagation();
         this._slideshowPreviewMode = false;
         const shufBtn = this.querySelector('#ftv-op-shuffle');
-        if (shufBtn) shufBtn.textContent = '\u267B Shuffle';
+        if (shufBtn) shufBtn.textContent = 'Shuffle';
         const baseline = this._slideshowMode === 'override' ? this._slideshowOverridePaths : this._slideshowCurrentPaths;
         this._slideshowSelected = new Set(baseline);
         this._renderOverrideGrid();
@@ -1818,9 +1912,47 @@ class FrameTVArtCard extends HTMLElement {
           if (opShuffle.disabled) {
             this._slideshowShuffling = false;
             opShuffle.disabled = false;
-            opShuffle.textContent = this._slideshowPreviewMode ? '\u267B Shuffle Again' : '\u267B Shuffle';
+            opShuffle.textContent = 'Shuffle';
           }
         }, 20000);
+      });
+    }
+    // Override popup: Clear all presets
+    const opClearPresets = this.querySelector('#ftv-presets-clear');
+    if (opClearPresets) {
+      opClearPresets.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._savePresets([]);
+      });
+    }
+    // Override popup: Generate default presets
+    const opGenerate = this.querySelector('#ftv-op-generate');
+    if (opGenerate) {
+      opGenerate.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!this._hass) return;
+        const orig = opGenerate.textContent;
+        opGenerate.disabled = true;
+        opGenerate.textContent = 'Generating\u2026';
+        this._generatingPresets = true;
+        this._hass.callService('mqtt', 'publish', {
+          topic: 'frame_tv/cmd/slideshow/presets/generate',
+          payload: JSON.stringify({ req_id: Date.now() }),
+          qos: 1, retain: false,
+        }).catch(() => {});
+      });
+    }
+    // Override popup: Save preset
+    const opSave = this.querySelector('#ftv-op-save');
+    if (opSave) {
+      opSave.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!this._slideshowSelected.size) return;
+        const name = prompt('Name this selection:');
+        if (!name || !name.trim()) return;
+        const presets = [...this._loadPresets(), { name: name.trim(), paths: [...this._slideshowSelected] }];
+        this._savePresets(presets);
+        // _renderPresets() will be called when the retained MQTT message echoes back
       });
     }
     // Override popup: Apply
@@ -2333,7 +2465,7 @@ class FrameTVArtCard extends HTMLElement {
           if (this._slideshowPreviewMode) {
             this._slideshowPreviewMode = false;
             const shufBtn = this.querySelector('#ftv-op-shuffle');
-            if (shufBtn) shufBtn.textContent = '\u267B Shuffle';
+            if (shufBtn) shufBtn.textContent = 'Shuffle';
           }
           this._renderOverrideGrid();
         });
@@ -2359,8 +2491,6 @@ class FrameTVArtCard extends HTMLElement {
     if (this._applyRestoreTimer) { clearTimeout(this._applyRestoreTimer); this._applyRestoreTimer = null; }
     if (this._clearRestoreTimer) { clearTimeout(this._clearRestoreTimer); this._clearRestoreTimer = null; }
     const count = this._slideshowSelected.size;
-    const counterEl = this.querySelector('#ftv-op-counter');
-    if (counterEl) counterEl.textContent = `${count} / ${this._slideshowMaxUploads} selected`;
     const applyBtn = this.querySelector('#ftv-op-apply');
     if (applyBtn) {
       applyBtn.textContent = 'Apply';
@@ -2376,6 +2506,75 @@ class FrameTVArtCard extends HTMLElement {
     }
     const resetBtn = this.querySelector('#ftv-op-reset');
     if (resetBtn) resetBtn.style.display = this._selectionMatchesBaseline() ? 'none' : '';
+    const saveBtn = this.querySelector('#ftv-op-save');
+    if (saveBtn) saveBtn.disabled = count === 0;
+    this._renderPresets();
+  }
+
+  _presetsKey() { return 'ftv-sl-presets'; } // unused, kept for reference
+  _loadPresets() { return this._slideshowPresets || []; }
+  _savePresets(arr) {
+    if (!this._hass) return;
+    this._hass.callService('mqtt', 'publish', {
+      topic: 'frame_tv/cmd/slideshow/presets/set',
+      payload: JSON.stringify(arr),
+      qos: 1,
+      retain: false,
+    }).catch(() => {});
+  }
+  _setsEqual(a, b) {
+    if (a.size !== b.size) return false;
+    for (const v of a) if (!b.has(v)) return false;
+    return true;
+  }
+  _renderPresets() {
+    const el = this.querySelector('#ftv-op-presets');
+    if (!el) return;
+    const presets = this._loadPresets();
+    if (this._generatingPresets) {
+      this._generatingPresets = false;
+      const btn = this.querySelector('#ftv-op-generate');
+      if (btn) { btn.disabled = false; btn.textContent = 'Generate'; }
+    }
+    const scrollDiv = this.querySelector('#ftv-presets-scroll');
+    if (scrollDiv) scrollDiv.style.display = presets.length ? '' : 'none';
+    el.innerHTML = presets.map((p, i) => {
+      const active = this._setsEqual(this._slideshowSelected, new Set(p.paths));
+      return `<span class="ftv-preset-chip${active ? ' active' : ''}" data-idx="${i}" title="${p.name} (${p.paths.length} images)">
+        ${p.name}
+        <span class="ftv-preset-upd" data-upd="${i}" title="Update with current selection">&#8593;</span>
+        <span class="ftv-preset-del" data-del="${i}">&times;</span>
+      </span>`;
+    }).join('');
+    el.querySelectorAll('.ftv-preset-chip').forEach(chip => {
+      chip.addEventListener('click', e => {
+        const del = e.target.closest('[data-del]');
+        if (del) {
+          const idx = parseInt(del.dataset.del, 10);
+          const presets = [...this._loadPresets()];
+          presets.splice(idx, 1);
+          this._savePresets(presets);
+          return;
+        }
+        const upd = e.target.closest('[data-upd]');
+        if (upd) {
+          if (!this._slideshowSelected.size) return;
+          const idx = parseInt(upd.dataset.upd, 10);
+          const presets = [...this._loadPresets()];
+          if (!presets[idx]) return;
+          presets[idx] = { name: presets[idx].name, paths: [...this._slideshowSelected] };
+          this._savePresets(presets);
+          return;
+        }
+        const idx = parseInt(chip.dataset.idx, 10);
+        const preset = this._loadPresets()[idx];
+        if (!preset) return;
+        this._slideshowSelected = new Set(preset.paths);
+        this._carouselOffsets = {};
+        this._renderOverrideGrid();
+        this._updateOverrideCounter();
+      });
+    });
   }
 
   _trySetBackground(el, urls) {

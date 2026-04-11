@@ -203,6 +203,62 @@
       color: #b6aba4; border-radius: 5px; cursor: pointer;
     }
     .sl-size-btn.active { background: rgba(47,127,191,0.3); border-color: #2f7fbf; color: #6ab0f5; }
+    .sl-save-btn {
+      padding: 4px 9px; font-size: 11px; font-weight: 600;
+      background: rgba(255,255,255,0.07); border: 1px solid #3a2f2a;
+      color: #b6aba4; border-radius: 5px; cursor: pointer;
+    }
+    .sl-save-btn:not([disabled]):hover { border-color: #2f7fbf; color: #6ab0f5; }
+    .sl-save-btn[disabled] { opacity: 0.4; cursor: default; }
+    .sl-presets-section { margin-top: 8px; border: 1px solid #3a2f2a; border-radius: 7px; overflow: hidden; }
+    .sl-presets-header {
+      display: flex; align-items: center; gap: 6px;
+      padding: 5px 8px;
+      background: #221e1b;
+      border-bottom: 1px solid #3a2f2a;
+      position: sticky; top: 0; z-index: 1;
+    }
+    .sl-presets-title {
+      font-size: 10px; font-weight: 600; letter-spacing: 0.6px; text-transform: uppercase;
+      color: #6b5e56; margin-right: auto;
+    }
+    .sl-presets-clear {
+      padding: 4px 9px; font-size: 11px; font-weight: 600;
+      background: rgba(255,255,255,0.07); border: 1px solid #3a2f2a;
+      color: #b6aba4; border-radius: 5px; cursor: pointer;
+    }
+    .sl-presets-clear:hover { border-color: #c04040; color: #ff8080; }
+    .sl-presets-scroll { max-height: 110px; overflow-y: auto; padding: 6px 8px 4px; }
+    .sl-presets { display: flex; flex-wrap: wrap; gap: 10px; min-height: 0; }
+    .sl-preset-chip {
+      position: relative; display: inline-flex; align-items: center;
+      padding: 4px 10px; font-size: 11px; border-radius: 12px;
+      background: rgba(47,127,191,0.15); border: 1px solid rgba(47,127,191,0.35);
+      color: #8ac4f0; cursor: pointer; white-space: nowrap; user-select: none;
+      margin: 6px 6px 2px;
+    }
+    .sl-preset-chip:hover { background: rgba(47,127,191,0.28); border-color: #2f7fbf; }
+    .sl-preset-chip.active {
+      background: rgba(42,157,92,0.15); border: 1px solid rgba(42,157,92,0.35);
+      color: #6ecf9a;
+    }
+    .sl-preset-chip.active:hover { background: rgba(42,157,92,0.28); border-color: #2a9d5c; }
+    .sl-preset-del {
+      position: absolute; top: -5px; right: -5px;
+      width: 14px; height: 14px; border-radius: 50%;
+      background: rgba(140,30,30,0.85); border: 1px solid #c04040;
+      color: #ffaaaa; font-size: 9px; line-height: 12px; text-align: center;
+      display: none; cursor: pointer; z-index: 1;
+    }
+    .sl-preset-chip:hover .sl-preset-del { display: block; }
+    .sl-preset-upd {
+      position: absolute; top: -5px; left: -5px;
+      width: 14px; height: 14px; border-radius: 50%;
+      background: rgba(180,140,20,0.85); border: 1px solid #c9a820;
+      color: #fff8cc; font-size: 9px; line-height: 12px; text-align: center;
+      display: none; cursor: pointer; z-index: 1;
+    }
+    .sl-preset-chip:not(.active):hover .sl-preset-upd { display: block; }
 
     /* Dropdown multi-select styling (aligns with HA card visuals) */
     .ftv-controls { border-radius: 8px; }
@@ -373,18 +429,26 @@
           <div class="hint" style="margin-top:4px;">Interval: minutes between changes (0=disabled). Max uploads: artwork stored on TV.</div>
           <!-- Override panel -->
           <div id="sl-override-panel" style="margin-top:14px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-              <span id="sl-counter" class="hint">0 selected</span>
-              <span id="sl-mode-badge" class="hint"></span>
-              <div style="display:flex; align-items:center; gap:10px;">
-                <div class="sl-size-btns">
-                  <button class="sl-size-btn" data-size="s">S</button>
-                  <button class="sl-size-btn active" data-size="m">M</button>
-                  <button class="sl-size-btn" data-size="l">L</button>
-                </div>
-                <button id="sl-override-reset" style="display:none; padding:8px 14px; width:auto; height:auto;">Reset</button>
-                <button id="sl-preview-shuffle" style="padding:8px 14px; width:auto; height:auto;" title="Preview a random selection without uploading">&#127922; Shuffle</button>
-                <button id="sl-override-apply" class="ftv-apply" disabled style="opacity:0.6; padding:8px 14px; width:auto; height:auto;">Apply</button>
+            <div style="display:flex; justify-content:flex-end; align-items:center; flex-wrap:wrap; gap:8px;">
+              <span id="sl-mode-badge" class="hint" style="margin-right:auto;"></span>
+              <div class="sl-size-btns">
+                <button class="sl-size-btn" data-size="s">S</button>
+                <button class="sl-size-btn active" data-size="m">M</button>
+                <button class="sl-size-btn" data-size="l">L</button>
+              </div>
+              <button id="sl-override-reset" style="display:none; padding:8px 14px; width:auto; height:auto;">Reset</button>
+              <button id="sl-preview-shuffle" style="padding:8px 14px; width:auto; height:auto;" title="Preview a random selection without uploading">Shuffle</button>
+              <button id="sl-override-apply" class="ftv-apply" disabled style="opacity:0.6; padding:8px 14px; width:auto; height:auto;">Apply</button>
+            </div>
+            <div id="sl-presets-section" class="sl-presets-section">
+              <div class="sl-presets-header">
+                <span class="sl-presets-title">Saved Selections</span>
+                <button id="sl-save-preset" class="sl-save-btn" disabled title="Save current selection as a new preset">Save New</button>
+                <button id="sl-generate-presets" class="sl-save-btn" title="Generate default saved selections from installed collections">Generate</button>
+                <button id="sl-presets-clear" class="sl-presets-clear" title="Clear all saved selections">Clear all</button>
+              </div>
+              <div class="sl-presets-scroll" id="sl-presets-scroll">
+                <div id="sl-presets" class="sl-presets"></div>
               </div>
             </div>
             <div id="sl-uploading-warn" style="display:none; padding:6px 0 0; font-size:0.8em; color:#ffb400;">
@@ -536,7 +600,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ broker: broker, username: username, password: password })
         }).catch(() => {});
-        client.subscribe([TOPIC_ATTR, TOPIC_STATE, TOPIC_COLL_ATTR, TOPIC_SELECTED, TOPIC_SETTINGS_ATTR, TOPIC_SLIDESHOW_STATE, TOPIC_SLIDESHOW_ATTR, TOPIC_SLIDESHOW_AVAIL, TOPIC_LOG, `${TOPIC_CMD_PREFIX}/collections/refresh`, `${TOPIC_ACK_PREFIX}/#`]);
+        client.subscribe([TOPIC_ATTR, TOPIC_STATE, TOPIC_COLL_ATTR, TOPIC_SELECTED, TOPIC_SETTINGS_ATTR, TOPIC_SLIDESHOW_STATE, TOPIC_SLIDESHOW_ATTR, TOPIC_SLIDESHOW_AVAIL, TOPIC_SLIDESHOW_PRESETS, TOPIC_LOG, `${TOPIC_CMD_PREFIX}/collections/refresh`, `${TOPIC_ACK_PREFIX}/#`]);
         requestSlideshowAvailable();
         scheduleAvailableRetry();
         // Retained messages arrive as a burst after subscribe. Defer sync so the
@@ -605,6 +669,13 @@
           }
           if (topic === TOPIC_SLIDESHOW_ATTR) {
             try { updateSlideshowState(JSON.parse(payload.toString() || '{}')); } catch(_) {}
+          }
+          if (topic === TOPIC_SLIDESHOW_PRESETS) {
+            try {
+              slideshowPresets = JSON.parse(payload.toString() || '[]');
+              if (!Array.isArray(slideshowPresets)) slideshowPresets = [];
+              renderPresets();
+            } catch(_) {}
           }
           if (topic === TOPIC_SLIDESHOW_AVAIL) {
             try {
@@ -699,12 +770,10 @@
               if (cmd === 'slideshow/preview/request') {
                 slideshowShuffling = false;
                 const $btn = document.getElementById('sl-preview-shuffle');
-                if ($btn) { $btn.disabled = false; $btn.textContent = '\u267B Shuffle Again'; }
+                if ($btn) { $btn.disabled = false; $btn.textContent = 'Shuffle'; }
                 if (status === 'ok' && Array.isArray(ack.paths) && ack.paths.length) {
                   slideshowPreviewMode = true;
                   slideshowSelected = new Set(ack.paths);
-                  const $badge = document.getElementById('sl-mode-badge');
-                  if ($badge) { $badge.textContent = '\u25CF Preview'; $badge.style.color = '#d4920a'; }
                   updateSlCounter();
                   renderSlideshowGrid();
                 } else {
@@ -734,6 +803,7 @@
     const TOPIC_SLIDESHOW_STATE = 'frame_tv/slideshow/state';
     const TOPIC_SLIDESHOW_ATTR  = 'frame_tv/slideshow/attributes';
     const TOPIC_SLIDESHOW_AVAIL = 'frame_tv/slideshow/available';
+    const TOPIC_SLIDESHOW_PRESETS = 'frame_tv/slideshow/presets';
     const TOPIC_LOG = 'frame_tv/log';
     const TOPIC_CMD_PREFIX = 'frame_tv/cmd';
     const $refresh = null; // Refresh button removed — covered by Shuffle + Apply
@@ -1004,6 +1074,8 @@
       } else {
         $bg.style.background = '';
         if ($np) $np.classList.remove('standby-mode');
+        const $logEl = document.getElementById('refresh-log');
+        if ($logEl) $logEl.innerHTML = '';
         const _fb = (!title && !artist) ? parseArtworkInfo(file) : null;
         const _dispTitle = title || (_fb && _fb.title) || file || 'Selected Artwork';
         const _dispYear  = year  || (_fb && _fb.year)  || '';
@@ -1534,9 +1606,105 @@
       }, 5000);
     }
 
-    const $slCounter   = document.getElementById('sl-counter');
     const $slOApply    = document.getElementById('sl-override-apply');
     const $slOReset    = document.getElementById('sl-override-reset');
+    const $slSavePreset = document.getElementById('sl-save-preset');
+    const $slPresetsEl   = document.getElementById('sl-presets');
+    const $slPresetsSec   = document.getElementById('sl-presets-section');
+    const $slPresetsScroll = document.getElementById('sl-presets-scroll');
+    const $slPresetsClear = document.getElementById('sl-presets-clear');
+    if ($slPresetsClear) {
+      $slPresetsClear.addEventListener('click', () => { publishPresets([]); });
+    }
+
+    // ── Saved Presets (MQTT-backed, retained on frame_tv/slideshow/presets) ────────────
+    const SL_PRESETS_KEY = 'sl-presets'; // kept for migration only
+    let slideshowPresets = [];
+    function publishPresets(arr) {
+      if (typeof client !== 'undefined' && client) {
+        client.publish(TOPIC_CMD_PREFIX + '/slideshow/presets/set', JSON.stringify(arr), { qos: 1 });
+      }
+    }
+    function setsEqual(a, b) {
+      if (a.size !== b.size) return false;
+      for (const v of a) if (!b.has(v)) return false;
+      return true;
+    }
+    let _generatingPresets = false;
+    function renderPresets() {
+      if (!$slPresetsEl) return;
+      const presets = slideshowPresets;
+      if (_generatingPresets) {
+        _generatingPresets = false;
+        const btn = document.getElementById('sl-generate-presets');
+        if (btn) { btn.disabled = false; btn.textContent = 'Generate'; }
+      }
+      const $scrollDiv = document.getElementById('sl-presets-scroll');
+      if ($scrollDiv) $scrollDiv.style.display = presets.length ? '' : 'none';
+      if (!presets.length) { $slPresetsEl.innerHTML = ''; return; }
+      const _savedScroll = $scrollDiv ? $scrollDiv.scrollTop : 0;
+      $slPresetsEl.innerHTML = presets.map((p, i) => {
+        const active = setsEqual(slideshowSelected, new Set(p.paths));
+        return `<span class="sl-preset-chip${active ? ' active' : ''}" data-idx="${i}" title="${escapeHtml(p.name)} (${p.paths.length} images)">
+          ${escapeHtml(p.name)}
+          <span class="sl-preset-upd" data-upd="${i}" title="Update with current selection">&#8593;</span>
+          <span class="sl-preset-del" data-del="${i}" title="Delete preset">&times;</span>
+        </span>`;
+      }).join('');
+      if ($scrollDiv) $scrollDiv.scrollTop = _savedScroll;
+    }
+    if ($slSavePreset) {
+      $slSavePreset.addEventListener('click', () => {
+        if (!slideshowSelected.size) return;
+        const name = prompt('Name this selection:');
+        if (!name || !name.trim()) return;
+        const presets = [...slideshowPresets, { name: name.trim(), paths: [...slideshowSelected] }];
+        publishPresets(presets);
+      });
+    }
+    const $slGeneratePresets = document.getElementById('sl-generate-presets');
+    if ($slGeneratePresets) {
+      $slGeneratePresets.addEventListener('click', () => {
+        if (typeof client === 'undefined' || !client) return;
+        const orig = $slGeneratePresets.textContent;
+        $slGeneratePresets.disabled = true;
+        $slGeneratePresets.textContent = 'Generating…';
+        _generatingPresets = true;
+        client.publish(TOPIC_CMD_PREFIX + '/slideshow/presets/generate', JSON.stringify({ req_id: Date.now() }), { qos: 1 });
+      });
+    }
+    if ($slPresetsEl) {
+      $slPresetsEl.addEventListener('click', e => {
+        const del = e.target.closest('[data-del]');
+        if (del) {
+          const idx = parseInt(del.dataset.del, 10);
+          const presets = [...slideshowPresets];
+          presets.splice(idx, 1);
+          publishPresets(presets);
+          return;
+        }
+        const upd = e.target.closest('[data-upd]');
+        if (upd) {
+          if (!slideshowSelected.size) return;
+          const idx = parseInt(upd.dataset.upd, 10);
+          const presets = [...slideshowPresets];
+          if (!presets[idx]) return;
+          presets[idx] = { name: presets[idx].name, paths: [...slideshowSelected] };
+          publishPresets(presets);
+          return;
+        }
+        const chip = e.target.closest('.sl-preset-chip');
+        if (chip) {
+          const idx = parseInt(chip.dataset.idx, 10);
+          const preset = slideshowPresets[idx];
+          if (!preset) return;
+          slideshowSelected = new Set(preset.paths);
+          slideshowCarouselOffsets = {};
+          renderSlideshowGrid();
+        }
+      });
+    }
+    renderPresets();
     const $slOClear    = document.getElementById('sl-override-clear');
     const $slGrid      = document.getElementById('sl-grid');
     const $slGridHint  = document.getElementById('sl-grid-hint');
@@ -1608,7 +1776,7 @@
           // Always set postClear to block any reseed from it — grid should stay empty.
           slideshowPreviewMode = false;
           const $shuf = document.getElementById('sl-preview-shuffle');
-          if ($shuf && !slideshowShuffling) $shuf.textContent = '\u267B Shuffle';
+          if ($shuf && !slideshowShuffling) $shuf.textContent = 'Shuffle';
           slideshowPostClear = true;
           if (slideshowUploading) {
             // Upload already in progress: keep existing selection visible (locked) during the cycle.
@@ -1624,7 +1792,7 @@
         } else if (uploadJustFinished) {
           slideshowPreviewMode = false;
           const $shuf = document.getElementById('sl-preview-shuffle');
-          if ($shuf && !slideshowShuffling) $shuf.textContent = '\u267B Shuffle';
+          if ($shuf && !slideshowShuffling) $shuf.textContent = 'Shuffle';
           schedulePostUploadAvailableRefresh(5);
           slideshowReverting = false;
           if (isOverride) {
@@ -1719,18 +1887,28 @@
     }
 
     function updateSlCounter() {
-      if (!$slCounter) return;
       const count = slideshowSelected.size;
-      $slCounter.textContent = `${count} selected`;
+      if ($slSavePreset) $slSavePreset.disabled = count === 0;
+      const differs = !selectionMatchesBaseline();
       if ($slOApply) {
-        const canApply = count > 0 && !slideshowUploading && !selectionMatchesBaseline();
+        const canApply = count > 0 && !slideshowUploading && differs;
         $slOApply.disabled = !canApply;
         $slOApply.style.opacity = canApply ? 1 : (slideshowUploading ? 0.4 : 0.6);
       }
       if ($slOReset) {
         const locked = slideshowUploading || slideshowUserRefreshPending || (slideshowStandby && slideshowMode !== 'override');
-        $slOReset.style.display = (locked || selectionMatchesBaseline()) ? 'none' : '';
+        $slOReset.style.display = (locked || !differs) ? 'none' : '';
       }
+      const $badge = document.getElementById('sl-mode-badge');
+      if ($badge) {
+        if (differs) {
+          $badge.textContent = '\u25CF Preview';
+          $badge.style.color = '#d4920a';
+        } else {
+          $badge.textContent = '';
+        }
+      }
+      renderPresets();
     }
 
     function preloadThumbnails(images) {
@@ -1812,6 +1990,9 @@
       // Preserve scroll position across re-renders triggered by thumb toggles.
       const $scrollEl = document.getElementById('viewSlideshow');
       const savedScroll = $scrollEl ? $scrollEl.scrollTop : 0;
+      // Save presets scroll BEFORE innerHTML wipe detaches the node (scrollTop becomes 0 once detached).
+      const _presetsScrollDiv = document.getElementById('sl-presets-scroll');
+      const _savedPresetsScroll = _presetsScrollDiv ? _presetsScrollDiv.scrollTop : 0;
 
       let html = '';
       // Selected overview at top
@@ -1858,6 +2039,17 @@
       });
 
       $slGrid.innerHTML = html;
+
+      // Re-insert the presets section into the grid, inside the Selected row between header and thumbnails.
+      if ($slPresetsSec) {
+        const selBody = $slGrid.querySelector('#sl-cc-sel');
+        if (selBody) selBody.before($slPresetsSec);
+        else $slGrid.prepend($slPresetsSec);
+        // Query AFTER re-insertion so getElementById finds the element back in the document.
+        const $presetsScrollDiv = document.getElementById('sl-presets-scroll');
+        if ($presetsScrollDiv) $presetsScrollDiv.scrollTop = _savedPresetsScroll;
+      }
+
       if ($scrollEl) $scrollEl.scrollTop = savedScroll;
 
       // Intersection-based lazy loading: only load images as they scroll into view
@@ -1899,9 +2091,7 @@
           if (slideshowPreviewMode) {
             slideshowPreviewMode = false;
             const $shuf = document.getElementById('sl-preview-shuffle');
-            if ($shuf) $shuf.textContent = '\u267B Shuffle';
-            const $badge = document.getElementById('sl-mode-badge');
-            if ($badge) $badge.textContent = '';
+            if ($shuf) $shuf.textContent = 'Shuffle';
           }
           const path = el.dataset.path;
           if (slideshowSelected.has(path)) { slideshowSelected.delete(path); }
@@ -1947,9 +2137,7 @@
         const wasPreview = !!slideshowPreviewMode;
         slideshowPreviewMode = false;
         const $shuf = document.getElementById('sl-preview-shuffle');
-        if ($shuf) $shuf.textContent = '\u267B Shuffle';
-        const $badge2 = document.getElementById('sl-mode-badge');
-        if ($badge2) $badge2.textContent = '';
+        if ($shuf) $shuf.textContent = 'Shuffle';
         // Build payload; if selection differs from server-confirmed max, update it
         const payload = { paths, req_id: Date.now() };
         if (paths.length !== slMaxUploadsBaseline) {
@@ -1974,10 +2162,8 @@
     if ($slOReset) {
       $slOReset.onclick = () => {
         slideshowPreviewMode = false;
-        const $badge = document.getElementById('sl-mode-badge');
-        if ($badge) $badge.textContent = '';
         const $btn = document.getElementById('sl-preview-shuffle');
-        if ($btn) $btn.textContent = '\u267B Shuffle';
+        if ($btn) $btn.textContent = 'Shuffle';
         const baseline = slideshowMode === 'override' ? slideshowOverridePaths : slideshowCurrentPaths;
         slideshowSelected = new Set(baseline);
         updateSlCounter();
@@ -2003,7 +2189,7 @@
           if ($slShuffle.disabled) {
             slideshowShuffling = false;
             $slShuffle.disabled = false;
-            $slShuffle.textContent = slideshowPreviewMode ? '\u267B Shuffle Again' : '\u267B Shuffle';
+            $slShuffle.textContent = 'Shuffle';
           }
         }, 20000);
       };

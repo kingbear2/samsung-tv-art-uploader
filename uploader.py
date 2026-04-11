@@ -52,6 +52,7 @@ import sys
 import logging
 import os
 import socket
+import threading
 import uuid
 import re
 import io
@@ -371,8 +372,11 @@ class monitor_and_display:
         self.mqtt_slideshow_state_topic = os.environ.get('SAMSUNG_TV_ART_MQTT_SLIDESHOW_STATE', 'frame_tv/slideshow/state')
         self.mqtt_slideshow_attr_topic = os.environ.get('SAMSUNG_TV_ART_MQTT_SLIDESHOW_ATTR', 'frame_tv/slideshow/attributes')
         self.mqtt_slideshow_available_topic = os.environ.get('SAMSUNG_TV_ART_MQTT_SLIDESHOW_AVAILABLE', 'frame_tv/slideshow/available')
+        self.mqtt_slideshow_presets_topic = os.environ.get('SAMSUNG_TV_ART_MQTT_SLIDESHOW_PRESETS', 'frame_tv/slideshow/presets')
         self.ha_rest_enabled = False  # REST disabled in MQTT-only build
         self._mqtt = None
+        self._presets_from_broker = False   # True once retained presets msg received
+        self._presets_bootstrap_timer = None
         self._mqtt_config_published = False
         # CSV metadata (optional)
         self.csv_path = os.environ.get('SAMSUNG_TV_ART_CSV_PATH', '/app/artwork_data.csv')
@@ -1835,6 +1839,10 @@ class monitor_and_display:
                 self._mqtt.subscribe(f"{self.mqtt_cmd_prefix}/#", qos=1)
             except Exception:
                 pass
+            try:
+                self._mqtt.subscribe(self.mqtt_slideshow_presets_topic, qos=1)
+            except Exception:
+                pass
             # Publish a diagnostic heartbeat to verify publish path
             try:
                 self._mqtt.publish('frame_tv/diag/online', 'online', qos=0, retain=False)
@@ -1895,9 +1903,126 @@ class monitor_and_display:
             # Absolute fallback to a random UUID-based id
             return f"frame-tv-art-{str(uuid.uuid4())[:8]}"
 
+    def _generate_default_presets(self):
+        """Build default saved-selection presets from installed collections."""
+        csv_data = getattr(self, '_csv_by_path', {})
+        if not csv_data:
+            # Fall back to scanning media_root directories
+            csv_data = {}
+            try:
+                for d in os.listdir(self.media_root):
+                    dp = os.path.join(self.media_root, d)
+                    if not os.path.isdir(dp):
+                        continue
+                    for f in os.listdir(dp):
+                        if f.lower().endswith(('.jpg','.jpeg','.png')) and f != 'standby.png':
+                            csv_data[f'{d}/{f}'] = {'artwork_title': f, 'artwork_dir': d}
+            except Exception:
+                pass
+
+        def _m(path, title, *kw):
+            t = (path + ' ' + title).lower()
+            return any(re.search(r'\b' + k + r'\b', t) for k in kw)
+
+        marine_kw = ['sea','ocean','coast','coastal','beach','wave','waves','marine',
+                     'harbour','harbor','port','sail','sailing','sailboat','boat','boats',
+                     'ship','ships','fishing','steamer','pier','dock','bay','fleet',
+                     'canal','barge','schooner','yacht','regatta','rowboat','whaling',
+                     'seascape','fisherman','fishermen']
+        land_kw   = ['landscape','valley','mountain','mountains','hill','hills','forest',
+                     'woodland','meadow','field','countryside','rural','farm','pastoral',
+                     'garden','park','river','lake','pond','waterfall','cliff','canyon',
+                     'desert','moor','fjord','wilderness','trees']
+        marine_excl = ['sea','ocean','harbour','harbor','port','sail','boat','ship',
+                       'vessel','pier','dock','fleet','marine','coastal','beach','schooner']
+
+        landscape_artists = {'Caspar_David_Friedrich','Albert_Bierstadt','Adalbert_Stifter',
+                              'Antoine_Chintreuil','Arthur_Streeton','Frederick_McCubbin'}
+        marine_artists    = {'Eugene_Boudin','Jacob_Maris','George_Wesley_Bellows'}
+        imp_artists       = {'Claude_Monet','Pierre-Auguste_Renoir','Alfred_Sisley',
+                              'Camille_Pissarro','Berthe_Morisot','Mary_Cassatt','Childe_Hassam'}
+        abstract_artists  = {'Jackson_Pollock','Mark_Rothko','Paul_Klee','Max_Ernst',
+                              'Franz_Marc','Andy_Warhol','Keith_Haring','Banksy',
+                              'Pablo_Picasso','Marc_Chagall','Henri_Matisse','Gerhard Richter'}
+        west_artists      = {'Frederic_Remington','Charles_Marion_Russell'}
+
+        def artist_of(path):
+            return path.split('/')[0] if '/' in path else ''
+
+        landscapes, marine, impressionism, abstract_mod, west, portraits = [], [], [], [], [], []
+        for path, row in csv_data.items():
+            title = (row.get('artwork_title') or '').strip()
+            art = artist_of(path)
+            is_marine = _m(path, title, *marine_kw)
+            is_land   = _m(path, title, *land_kw) and not _m(path, title, *marine_excl)
+            if (art in landscape_artists and not is_marine) or \
+               (is_land and art not in abstract_artists and art not in {'Banksy','Andy_Warhol',
+                'Keith_Haring','Jackson_Pollock','Mark_Rothko','Pablo_Picasso','Henri_Matisse',
+                'Marc_Chagall','Paul_Klee','Max_Ernst','Alphonse_Mucha','El_Greco',
+                'Diego_Velazquez','Sandro_Botticelli','Francois_Boucher','Gustav_Klimt',
+                'Rembrandt_Harmenszoon_van_Rijn','Leonardo_da_Vinci'}):
+                landscapes.append(path)
+            if art in marine_artists or is_marine:
+                marine.append(path)
+            if art in imp_artists:
+                impressionism.append(path)
+            if art in abstract_artists:
+                abstract_mod.append(path)
+            if art in west_artists:
+                west.append(path)
+            if _m(path, title, 'portrait', 'self-portrait', 'bust') and \
+               not _m(path, title, 'landscape','mountain','forest','field','river','lake','boat','ship'):
+                portraits.append(path)
+
+        CHUNK = 30
+        presets = []
+        for name, paths in [
+            ('Landscapes',       landscapes),
+            ('Boats & Marine',    marine),
+            ('Impressionism',     impressionism),
+            ('Abstract & Modern', abstract_mod),
+            ('American West',     west),
+            ('Portraits',         portraits),
+        ]:
+            unique = sorted(set(paths))
+            if not unique:
+                continue
+            if len(unique) <= CHUNK:
+                presets.append({'name': name, 'paths': unique})
+            else:
+                # Split into numbered sub-presets of CHUNK images each
+                chunks = [unique[i:i+CHUNK] for i in range(0, len(unique), CHUNK)]
+                for idx, chunk in enumerate(chunks, 1):
+                    presets.append({'name': f'{name} {idx}', 'paths': chunk})
+        return presets
+
+    def _bootstrap_default_presets(self):
+        """Publish default presets if no retained message arrived after connect."""
+        if self._presets_from_broker:
+            return
+        if not self._mqtt or not self._mqtt_is_connected:
+            return
+        try:
+            defaults = self._generate_default_presets()
+            if defaults:
+                self._mqtt.publish(
+                    self.mqtt_slideshow_presets_topic,
+                    json.dumps(defaults),
+                    qos=1, retain=True,
+                )
+                self.log.info('Published %d default preset(s) to %s',
+                              len(defaults), self.mqtt_slideshow_presets_topic)
+        except Exception as e:
+            self.log.warning('Failed to publish default presets: %s', e)
+
     def _on_mqtt_message(self, client, userdata, msg):
         try:
             topic = getattr(msg, 'topic', '')
+            if topic == self.mqtt_slideshow_presets_topic:
+                self._presets_from_broker = True
+                if self._presets_bootstrap_timer:
+                    self._presets_bootstrap_timer.cancel()
+                    self._presets_bootstrap_timer = None
             if self.selection_from_mqtt and topic == self.selection_mqtt_topic:
                 payload = msg.payload.decode('utf-8') if isinstance(msg.payload, (bytes, bytearray)) else str(msg.payload or '')
                 raw_cols = [c.strip() for c in (payload or '').split(',') if c.strip()]
@@ -1964,8 +2089,21 @@ class monitor_and_display:
                     if self.selection_from_mqtt:
                         client.subscribe(self.selection_mqtt_topic, qos=1)
                     client.subscribe(f"{self.mqtt_cmd_prefix}/#", qos=1)
+                    client.subscribe(self.mqtt_slideshow_presets_topic, qos=1)
                 except Exception:
                     pass
+                # Bootstrap default presets if broker has none after 3 seconds.
+                # Only start the timer on the first-ever connect; on reconnects
+                # _presets_from_broker is already True (we've seen the retained
+                # presets before) so we skip re-bootstrapping, which would
+                # otherwise overwrite a user "Clear all" action.
+                if not self._presets_from_broker:
+                    if self._presets_bootstrap_timer:
+                        self._presets_bootstrap_timer.cancel()
+                    t = threading.Timer(3.0, self._bootstrap_default_presets)
+                    t.daemon = True
+                    t.start()
+                    self._presets_bootstrap_timer = t
                 # Republish retained state so broker always has fresh data after reconnect
                 try:
                     self._publish_collections_state()
@@ -2915,6 +3053,40 @@ class monitor_and_display:
                 fut = self._schedule_command_coro(self._apply_slideshow_override(paths, req_id, new_collections=new_cols, max_uploads=new_max), 'slideshow/override/set')
                 if not fut:
                     self._publish_ack('slideshow/override/set', 'error', 'Failed to queue override apply', req_id)
+                return
+            if cmd == 'slideshow/presets/set':
+                # Clients publish their full presets array here; backend re-publishes
+                # it as a retained message so all other clients receive it on subscribe.
+                try:
+                    presets = json.loads(payload_raw) if payload_raw else []
+                    if not isinstance(presets, list):
+                        presets = []
+                    self._mqtt.publish(
+                        self.mqtt_slideshow_presets_topic,
+                        json.dumps(presets),
+                        qos=1,
+                        retain=True,
+                    )
+                    self._publish_ack('slideshow/presets/set', 'ok', 'Presets saved', req_id)
+                except Exception as e:
+                    self._publish_ack('slideshow/presets/set', 'error', str(e), req_id)
+                return
+            if cmd == 'slideshow/presets/generate':
+                try:
+                    generated = self._generate_default_presets()
+                    if not generated:
+                        self._publish_ack('slideshow/presets/generate', 'error', 'No images found', req_id)
+                        return
+                    self._mqtt.publish(
+                        self.mqtt_slideshow_presets_topic,
+                        json.dumps(generated),
+                        qos=1,
+                        retain=True,
+                    )
+                    self._publish_ack('slideshow/presets/generate', 'ok',
+                                      f'{len(generated)} preset(s) generated', req_id)
+                except Exception as e:
+                    self._publish_ack('slideshow/presets/generate', 'error', str(e), req_id)
                 return
             if cmd == 'slideshow/override/clear':
                 self.slideshow_override = None
