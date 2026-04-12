@@ -52,6 +52,7 @@ import sys
 import logging
 import os
 import socket
+import threading
 import uuid
 import re
 import io
@@ -338,6 +339,7 @@ class monitor_and_display:
         self.upload_delay_seconds = int(os.environ.get('SAMSUNG_TV_ART_UPLOAD_DELAY_SECONDS', '1'))
         self.delete_delay_seconds = int(os.environ.get('SAMSUNG_TV_ART_DELETE_DELAY_SECONDS', '1'))
         self.post_delete_recovery_seconds = int(os.environ.get('SAMSUNG_TV_ART_POST_DELETE_RECOVERY_SECONDS', '5'))
+        self.max_uploads = int(os.environ.get('SAMSUNG_TV_ART_MAX_UPLOADS', '10'))
         # MQTT configuration (optional)
         # mqtt_enabled: True when MQTT_HOST is explicitly configured, OR MQTT_DISCOVERY is set.
         # Previously gated only on MQTT_DISCOVERY, which silently disabled all MQTT for users
@@ -370,8 +372,11 @@ class monitor_and_display:
         self.mqtt_slideshow_state_topic = os.environ.get('SAMSUNG_TV_ART_MQTT_SLIDESHOW_STATE', 'frame_tv/slideshow/state')
         self.mqtt_slideshow_attr_topic = os.environ.get('SAMSUNG_TV_ART_MQTT_SLIDESHOW_ATTR', 'frame_tv/slideshow/attributes')
         self.mqtt_slideshow_available_topic = os.environ.get('SAMSUNG_TV_ART_MQTT_SLIDESHOW_AVAILABLE', 'frame_tv/slideshow/available')
+        self.mqtt_slideshow_presets_topic = os.environ.get('SAMSUNG_TV_ART_MQTT_SLIDESHOW_PRESETS', 'frame_tv/slideshow/presets')
         self.ha_rest_enabled = False  # REST disabled in MQTT-only build
         self._mqtt = None
+        self._presets_from_broker = False   # True once retained presets msg received
+        self._presets_bootstrap_timer = None
         self._mqtt_config_published = False
         # CSV metadata (optional)
         self.csv_path = os.environ.get('SAMSUNG_TV_ART_CSV_PATH', '/app/artwork_data.csv')
@@ -999,6 +1004,21 @@ class monitor_and_display:
         # the correct 'Standby' state.  Polling the TV here can return the old artwork
         # content_id (display-switch lag) and would overwrite the correct retained message.
         if not self.standby_content_id:
+            # If art mode hasn't been confirmed True yet, do one more check before
+            # publishing.  The Samsung TV WebSocket can return an empty response to
+            # the very first in_artmode() query right after a fresh connection
+            # (seen most often on container restart), which makes cleanup_old_uploads()
+            # set _in_art_mode=False and return early.  A single retry here, after a
+            # brief pause for the TV WS to stabilise, usually gets the correct state
+            # and prevents a spurious in_art_mode:false from being written to the
+            # retained MQTT topic — which is what causes the "not in art mode" flash
+            # on the web UI / HA card after container reboots.
+            if self._in_art_mode is not True and self.tv is not None:
+                try:
+                    await asyncio.sleep(1)
+                    await self.safe_in_artmode()
+                except Exception:
+                    pass
             try:
                 await self._publish_current_artwork_state(force=True)
             except Exception:
@@ -1534,7 +1554,90 @@ class monitor_and_display:
 
         self.log.info('Total files selected for upload: %d', len(selected))
         return selected
-            
+
+    _PREVIEW_IMAGE_EXT = frozenset(('.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'))
+
+    def _preview_random_selection(self, collections, max_n):
+        """Return a randomly-picked list of up to max_n path_rel values from
+        the given collections, using the same fresh-first logic as
+        get_files_from_multiple_collections but without filtering out files
+        that are already on the TV (this is a dry-run preview).
+
+        Uses a fast extension check instead of PIL get_file_type() so that
+        this method is safe to call from the synchronous paho MQTT callback
+        thread — PIL disk I/O would block paho's network loop and delay the
+        ack publish by as long as it takes to read every file header.
+        """
+        last_paths = getattr(self, '_last_slideshow_paths', set())
+        collections = list(collections)
+        num_collections = len(collections)
+        if num_collections == 0:
+            return []
+
+        # Build one candidate per collection (prefer fresh images within each collection),
+        # then shuffle the per-collection candidates so any max_n of the num_collections
+        # collections can contribute equally regardless of collection size or disk order.
+        # Overflow images (beyond the first per collection) go into spill pools used to
+        # fill any remaining deficit after the per-collection pass.
+        candidates_fresh = []  # best (fresh) candidate from each collection
+        candidates_stale = []  # best (stale) candidate from collections with no fresh images
+        spill_fresh = []       # additional fresh images beyond the first per collection
+        spill_stale = []       # all stale images
+        total_found = 0
+
+        for collection in collections:
+            collection_path = os.path.join(self.media_root, collection)
+            if not os.path.isdir(collection_path):
+                continue
+            try:
+                # Use cached listing from _publish_slideshow_available if available
+                # so the first shuffle click doesn't block paho with a cold disk scan.
+                raw_files = getattr(self, '_collection_file_cache', {}).get(collection_path)
+                if raw_files is None:
+                    raw_files = os.listdir(collection_path)
+                col_rel = [
+                    os.path.join(collection, f)
+                    for f in raw_files
+                    if f.lower() != 'standby.png'
+                    and os.path.isfile(os.path.join(collection_path, f))
+                    and os.path.splitext(f)[1].lower() in self._PREVIEW_IMAGE_EXT
+                ]
+            except Exception:
+                continue
+
+            total_found += len(col_rel)
+            fresh = [f for f in col_rel if f not in last_paths]
+            stale = [f for f in col_rel if f in last_paths]
+            random.shuffle(fresh)
+            random.shuffle(stale)
+
+            if fresh:
+                candidates_fresh.append(fresh[0])
+                spill_fresh.extend(fresh[1:])
+                spill_stale.extend(stale)
+            elif stale:
+                candidates_stale.append(stale[0])
+                spill_stale.extend(stale[1:])
+
+        # Shuffle so the cut of max_n collections is uniformly random
+        random.shuffle(candidates_fresh)
+        random.shuffle(candidates_stale)
+
+        # Fresh-first: prefer fresh candidates, supplement with stale candidates, then spill
+        selected = (candidates_fresh + candidates_stale)[:max_n]
+        deficit = max_n - len(selected)
+        if deficit > 0 and spill_fresh:
+            random.shuffle(spill_fresh)
+            selected.extend(spill_fresh[:deficit])
+            deficit = max_n - len(selected)
+        if deficit > 0 and spill_stale:
+            random.shuffle(spill_stale)
+            selected.extend(spill_stale[:deficit])
+
+        self.log.info('Preview result: %d/%d images (total_available=%d across %d collections)',
+                      len(selected), max_n, total_found, num_collections)
+        return selected
+
     async def update_files(self, files):
         '''
         check if files were modified
@@ -1736,6 +1839,10 @@ class monitor_and_display:
                 self._mqtt.subscribe(f"{self.mqtt_cmd_prefix}/#", qos=1)
             except Exception:
                 pass
+            try:
+                self._mqtt.subscribe(self.mqtt_slideshow_presets_topic, qos=1)
+            except Exception:
+                pass
             # Publish a diagnostic heartbeat to verify publish path
             try:
                 self._mqtt.publish('frame_tv/diag/online', 'online', qos=0, retain=False)
@@ -1796,9 +1903,126 @@ class monitor_and_display:
             # Absolute fallback to a random UUID-based id
             return f"frame-tv-art-{str(uuid.uuid4())[:8]}"
 
+    def _generate_default_presets(self):
+        """Build default saved-selection presets from installed collections."""
+        csv_data = getattr(self, '_csv_by_path', {})
+        if not csv_data:
+            # Fall back to scanning media_root directories
+            csv_data = {}
+            try:
+                for d in os.listdir(self.media_root):
+                    dp = os.path.join(self.media_root, d)
+                    if not os.path.isdir(dp):
+                        continue
+                    for f in os.listdir(dp):
+                        if f.lower().endswith(('.jpg','.jpeg','.png')) and f != 'standby.png':
+                            csv_data[f'{d}/{f}'] = {'artwork_title': f, 'artwork_dir': d}
+            except Exception:
+                pass
+
+        def _m(path, title, *kw):
+            t = (path + ' ' + title).lower()
+            return any(re.search(r'\b' + k + r'\b', t) for k in kw)
+
+        marine_kw = ['sea','ocean','coast','coastal','beach','wave','waves','marine',
+                     'harbour','harbor','port','sail','sailing','sailboat','boat','boats',
+                     'ship','ships','fishing','steamer','pier','dock','bay','fleet',
+                     'canal','barge','schooner','yacht','regatta','rowboat','whaling',
+                     'seascape','fisherman','fishermen']
+        land_kw   = ['landscape','valley','mountain','mountains','hill','hills','forest',
+                     'woodland','meadow','field','countryside','rural','farm','pastoral',
+                     'garden','park','river','lake','pond','waterfall','cliff','canyon',
+                     'desert','moor','fjord','wilderness','trees']
+        marine_excl = ['sea','ocean','harbour','harbor','port','sail','boat','ship',
+                       'vessel','pier','dock','fleet','marine','coastal','beach','schooner']
+
+        landscape_artists = {'Caspar_David_Friedrich','Albert_Bierstadt','Adalbert_Stifter',
+                              'Antoine_Chintreuil','Arthur_Streeton','Frederick_McCubbin'}
+        marine_artists    = {'Eugene_Boudin','Jacob_Maris','George_Wesley_Bellows'}
+        imp_artists       = {'Claude_Monet','Pierre-Auguste_Renoir','Alfred_Sisley',
+                              'Camille_Pissarro','Berthe_Morisot','Mary_Cassatt','Childe_Hassam'}
+        abstract_artists  = {'Jackson_Pollock','Mark_Rothko','Paul_Klee','Max_Ernst',
+                              'Franz_Marc','Andy_Warhol','Keith_Haring','Banksy',
+                              'Pablo_Picasso','Marc_Chagall','Henri_Matisse','Gerhard Richter'}
+        west_artists      = {'Frederic_Remington','Charles_Marion_Russell'}
+
+        def artist_of(path):
+            return path.split('/')[0] if '/' in path else ''
+
+        landscapes, marine, impressionism, abstract_mod, west, portraits = [], [], [], [], [], []
+        for path, row in csv_data.items():
+            title = (row.get('artwork_title') or '').strip()
+            art = artist_of(path)
+            is_marine = _m(path, title, *marine_kw)
+            is_land   = _m(path, title, *land_kw) and not _m(path, title, *marine_excl)
+            if (art in landscape_artists and not is_marine) or \
+               (is_land and art not in abstract_artists and art not in {'Banksy','Andy_Warhol',
+                'Keith_Haring','Jackson_Pollock','Mark_Rothko','Pablo_Picasso','Henri_Matisse',
+                'Marc_Chagall','Paul_Klee','Max_Ernst','Alphonse_Mucha','El_Greco',
+                'Diego_Velazquez','Sandro_Botticelli','Francois_Boucher','Gustav_Klimt',
+                'Rembrandt_Harmenszoon_van_Rijn','Leonardo_da_Vinci'}):
+                landscapes.append(path)
+            if art in marine_artists or is_marine:
+                marine.append(path)
+            if art in imp_artists:
+                impressionism.append(path)
+            if art in abstract_artists:
+                abstract_mod.append(path)
+            if art in west_artists:
+                west.append(path)
+            if _m(path, title, 'portrait', 'self-portrait', 'bust') and \
+               not _m(path, title, 'landscape','mountain','forest','field','river','lake','boat','ship'):
+                portraits.append(path)
+
+        CHUNK = 30
+        presets = []
+        for name, paths in [
+            ('Landscapes',       landscapes),
+            ('Boats & Marine',    marine),
+            ('Impressionism',     impressionism),
+            ('Abstract & Modern', abstract_mod),
+            ('American West',     west),
+            ('Portraits',         portraits),
+        ]:
+            unique = sorted(set(paths))
+            if not unique:
+                continue
+            if len(unique) <= CHUNK:
+                presets.append({'name': name, 'paths': unique})
+            else:
+                # Split into numbered sub-presets of CHUNK images each
+                chunks = [unique[i:i+CHUNK] for i in range(0, len(unique), CHUNK)]
+                for idx, chunk in enumerate(chunks, 1):
+                    presets.append({'name': f'{name} {idx}', 'paths': chunk})
+        return presets
+
+    def _bootstrap_default_presets(self):
+        """Publish default presets if no retained message arrived after connect."""
+        if self._presets_from_broker:
+            return
+        if not self._mqtt or not self._mqtt_is_connected:
+            return
+        try:
+            defaults = self._generate_default_presets()
+            if defaults:
+                self._mqtt.publish(
+                    self.mqtt_slideshow_presets_topic,
+                    json.dumps(defaults),
+                    qos=1, retain=True,
+                )
+                self.log.info('Published %d default preset(s) to %s',
+                              len(defaults), self.mqtt_slideshow_presets_topic)
+        except Exception as e:
+            self.log.warning('Failed to publish default presets: %s', e)
+
     def _on_mqtt_message(self, client, userdata, msg):
         try:
             topic = getattr(msg, 'topic', '')
+            if topic == self.mqtt_slideshow_presets_topic:
+                self._presets_from_broker = True
+                if self._presets_bootstrap_timer:
+                    self._presets_bootstrap_timer.cancel()
+                    self._presets_bootstrap_timer = None
             if self.selection_from_mqtt and topic == self.selection_mqtt_topic:
                 payload = msg.payload.decode('utf-8') if isinstance(msg.payload, (bytes, bytearray)) else str(msg.payload or '')
                 raw_cols = [c.strip() for c in (payload or '').split(',') if c.strip()]
@@ -1865,8 +2089,21 @@ class monitor_and_display:
                     if self.selection_from_mqtt:
                         client.subscribe(self.selection_mqtt_topic, qos=1)
                     client.subscribe(f"{self.mqtt_cmd_prefix}/#", qos=1)
+                    client.subscribe(self.mqtt_slideshow_presets_topic, qos=1)
                 except Exception:
                     pass
+                # Bootstrap default presets if broker has none after 3 seconds.
+                # Only start the timer on the first-ever connect; on reconnects
+                # _presets_from_broker is already True (we've seen the retained
+                # presets before) so we skip re-bootstrapping, which would
+                # otherwise overwrite a user "Clear all" action.
+                if not self._presets_from_broker:
+                    if self._presets_bootstrap_timer:
+                        self._presets_bootstrap_timer.cancel()
+                    t = threading.Timer(3.0, self._bootstrap_default_presets)
+                    t.daemon = True
+                    t.start()
+                    self._presets_bootstrap_timer = t
                 # Republish retained state so broker always has fresh data after reconnect
                 try:
                     self._publish_collections_state()
@@ -2183,7 +2420,7 @@ class monitor_and_display:
                 'mode': mode,
                 'sequential': self.sequential,
                 'update_minutes': int(max(0, (self.update_time or 0) / 60)),
-                'max_uploads': int(os.environ.get('SAMSUNG_TV_ART_MAX_UPLOADS', '10')),
+                'max_uploads': self.max_uploads,
                 'override_paths': list(self.slideshow_override) if self.slideshow_override else [],
                 'current_paths': current_paths,
                 'uploading': bool(self._refresh_in_progress or getattr(self, '_startup_in_progress', False)),
@@ -2217,8 +2454,15 @@ class monitor_and_display:
                 if not os.path.isdir(coll_path):
                     continue
                 try:
+                    raw_files = os.listdir(coll_path)
+                    # Cache the raw listing so _preview_random_selection can reuse it
+                    # without a second cold scan on first shuffle click.
+                    if override_collections is None:
+                        if not hasattr(self, '_collection_file_cache'):
+                            self._collection_file_cache = {}
+                        self._collection_file_cache[coll_path] = raw_files
                     files = sorted([
-                        f for f in os.listdir(coll_path)
+                        f for f in raw_files
                         if f.lower().endswith(('.jpg', '.jpeg', '.png'))
                         and f not in ('standby.png',)
                     ])
@@ -2240,13 +2484,13 @@ class monitor_and_display:
                         'uploaded': path_rel in uploaded_paths,
                     })
 
-            # Cap to 500 images for manageable MQTT payload, but always include every
-            # uploaded file — breaking out of the collection loop early would exclude
-            # whole collections and cause the uploaded-overlap count to drop below max_uploads.
-            if len(images) > 500:
+            # Cap to 5000 images to keep the MQTT payload manageable while covering
+            # large libraries (at ~200 bytes/entry, 5000 ≈ 1MB — fine for any modern broker).
+            # Always include every uploaded file so the uploaded-overlap count stays correct.
+            if len(images) > 5000:
                 uploaded_imgs = [img for img in images if img['uploaded']]
                 other_imgs = [img for img in images if not img['uploaded']]
-                images = uploaded_imgs + other_imgs[:max(0, 500 - len(uploaded_imgs))]
+                images = uploaded_imgs + other_imgs[:max(0, 5000 - len(uploaded_imgs))]
 
             payload = json.dumps({'images': images}, separators=(',', ':'))
             try:
@@ -2260,11 +2504,16 @@ class monitor_and_display:
         except Exception as e:
             self.log.warning('MQTT slideshow available publish failed: %s', e)
 
-    async def _apply_slideshow_override(self, paths, req_id=None, new_collections=None):
-        """Upload any missing override files, activate the override, and trigger change_art.
-        When new_collections is provided, commits that collection selection atomically
-        (no separate reseed will be triggered).
+    async def _apply_slideshow_override(self, paths, req_id=None, new_collections=None, max_uploads=None):
+        """Apply a specific image selection to the TV.
+        If all requested images are already uploaded: simply restricts which play (lightweight).
+        If any images need uploading: performs a full clean reseed with the specified paths.
+        When max_uploads is provided, persists the new limit to overrides.env.
         """
+        def ack(status, msg):
+            self._publish_ack('slideshow/override/set', status, msg, req_id)
+
+        needs_cleanup = False
         try:
             if new_collections is not None:
                 # Commit the collection selection without triggering a separate full reseed.
@@ -2277,20 +2526,76 @@ class monitor_and_display:
                 self._publish_selected_collections_state()
                 self._cache_selected_collections()
                 self.log.info('Collections committed atomically with override: %s', new_collections)
+
+            # Optionally update max_uploads (user manually exceeded the limit)
+            if max_uploads is not None and isinstance(max_uploads, int) and max_uploads > 0:
+                self.max_uploads = max_uploads
+                os.environ['SAMSUNG_TV_ART_MAX_UPLOADS'] = str(max_uploads)
+                self._write_overrides({'SAMSUNG_TV_ART_MAX_UPLOADS': str(max_uploads)})
+                self.log.info('max_uploads updated to %d', max_uploads)
+
             uploaded_paths = {v.get('path_rel', k) for k, v in self.uploaded_files.items()}
             to_upload = [p for p in paths if p not in uploaded_paths]
-            if to_upload:
-                self._publish_ack('slideshow/override/set', 'progress', f'Uploading {len(to_upload)} file(s)...', req_id)
-                await self.upload_files(to_upload)
+            needs_cleanup = bool(to_upload)
+
+            if needs_cleanup:
+                # Full clean reseed with exactly the specified paths
+                self._refresh_in_progress = True
+                self._publish_slideshow_state()
+                ack('progress', 'Preparing TV — switching to standby...')
+                await self.ensure_standby_selected()
+                if self.standby_content_id:
+                    try:
+                        await self.tv.select_image(self.standby_content_id)
+                        self._publish_mqtt_state('Standby', 'standby.png', None)
+                    except Exception as e:
+                        self.log.warning('Failed to select standby: %s', e)
+                        self.standby_content_id = None
+
+                # Snapshot current uploads so the next shuffle prefers fresh images
+                self._last_slideshow_paths = {
+                    v.get('path_rel') for v in self.uploaded_files.values() if v.get('path_rel')
+                }
+
+                _existing = len([k for k in self.uploaded_files if k not in self.exclude and k != (os.path.basename(self.standby) if self.standby else None)])
+                ack('progress', f'Removing {_existing} old upload(s) from TV...' if _existing else 'Removing old uploads from TV...')
+                await self.cleanup_old_uploads()
+
+                if self.standby_content_id:
+                    try:
+                        await self.tv.select_image(self.standby_content_id)
+                    except Exception:
+                        pass
+
+                ack('progress', f'Uploading {len(paths)} image(s)...')
+                await self.upload_files(paths)
                 await asyncio.sleep(2)
+
             self.slideshow_override = paths
             self._save_slideshow_override()
             self.shown_content_ids = set()
+            # Mark the applied paths as "previously seen" so the next shuffle
+            # treats them as stale and prefers different images.
+            self._last_slideshow_paths = set(paths)
             self._publish_slideshow_state()
             await self.change_art()
-            self._publish_ack('slideshow/override/set', 'ok', f'Override applied with {len(paths)} image(s)', req_id)
+            if needs_cleanup:
+                self.start = time.time()
+                self.write_program_data()  # persists _last_slideshow_paths via cache
+            ack('ok', f'Applied {len(paths)} image(s)')
         except Exception as e:
-            self._publish_ack('slideshow/override/set', 'error', str(e), req_id)
+            self.log.warning('Error applying selection: %s', e)
+            ack('error', str(e))
+            raise
+        finally:
+            if needs_cleanup:
+                self._refresh_in_progress = False
+                self._publish_slideshow_state()
+                self._publish_slideshow_available()
+                try:
+                    await self._publish_current_artwork_state(force=True)
+                except Exception:
+                    pass
 
     def _write_overrides(self, updates: dict) -> bool:
         """Write overrides to /data/overrides.env, merging with existing content."""
@@ -2676,6 +2981,9 @@ class monitor_and_display:
                             self.update_time = int(apply_runtime['UPDATE_SECONDS'])
                             # Reset slideshow timer so new interval takes effect cleanly
                             self.start = time.time()
+                        if 'SAMSUNG_TV_ART_MAX_UPLOADS' in updates:
+                            self.max_uploads = int(updates['SAMSUNG_TV_ART_MAX_UPLOADS'])
+                            self._publish_slideshow_state()
                     except Exception:
                         pass
                     self._publish_settings_state()
@@ -2735,9 +3043,50 @@ class monitor_and_display:
                 if data and 'collections' in data and isinstance(data['collections'], list):
                     raw_cols = [str(c).strip() for c in data['collections'] if str(c).strip()]
                     new_cols = [self._map_to_artwork_dir(c) or c for c in raw_cols if (self._map_to_artwork_dir(c) or c)]
-                fut = self._schedule_command_coro(self._apply_slideshow_override(paths, req_id, new_collections=new_cols), 'slideshow/override/set')
+                # Optional 'max_uploads' field: user manually exceeded the limit.
+                new_max = None
+                if data and 'max_uploads' in data:
+                    try:
+                        new_max = int(data['max_uploads'])
+                    except (ValueError, TypeError):
+                        new_max = None
+                fut = self._schedule_command_coro(self._apply_slideshow_override(paths, req_id, new_collections=new_cols, max_uploads=new_max), 'slideshow/override/set')
                 if not fut:
                     self._publish_ack('slideshow/override/set', 'error', 'Failed to queue override apply', req_id)
+                return
+            if cmd == 'slideshow/presets/set':
+                # Clients publish their full presets array here; backend re-publishes
+                # it as a retained message so all other clients receive it on subscribe.
+                try:
+                    presets = json.loads(payload_raw) if payload_raw else []
+                    if not isinstance(presets, list):
+                        presets = []
+                    self._mqtt.publish(
+                        self.mqtt_slideshow_presets_topic,
+                        json.dumps(presets),
+                        qos=1,
+                        retain=True,
+                    )
+                    self._publish_ack('slideshow/presets/set', 'ok', 'Presets saved', req_id)
+                except Exception as e:
+                    self._publish_ack('slideshow/presets/set', 'error', str(e), req_id)
+                return
+            if cmd == 'slideshow/presets/generate':
+                try:
+                    generated = self._generate_default_presets()
+                    if not generated:
+                        self._publish_ack('slideshow/presets/generate', 'error', 'No images found', req_id)
+                        return
+                    self._mqtt.publish(
+                        self.mqtt_slideshow_presets_topic,
+                        json.dumps(generated),
+                        qos=1,
+                        retain=True,
+                    )
+                    self._publish_ack('slideshow/presets/generate', 'ok',
+                                      f'{len(generated)} preset(s) generated', req_id)
+                except Exception as e:
+                    self._publish_ack('slideshow/presets/generate', 'error', str(e), req_id)
                 return
             if cmd == 'slideshow/override/clear':
                 self.slideshow_override = None
@@ -2755,6 +3104,34 @@ class monitor_and_display:
                     preview_cols = [self._map_to_artwork_dir(c) or c for c in raw_cols]
                 self._publish_slideshow_available(override_collections=preview_cols)
                 self._publish_ack('slideshow/available/request', 'ok', 'Available list published', req_id)
+                return
+            if cmd == 'slideshow/preview/request':
+                # Compute a random selection dry-run without uploading anything.
+                # Optional 'collections' field overrides selected_collections for the preview.
+                preview_cols = list(self.selected_collections)
+                if data and 'collections' in data and isinstance(data['collections'], list):
+                    raw_cols = [str(c).strip() for c in data['collections'] if str(c).strip()]
+                    preview_cols = [self._map_to_artwork_dir(c) or c for c in raw_cols]
+                max_n = self.max_uploads
+                paths = self._preview_random_selection(preview_cols, max_n)
+                try:
+                    ack = {
+                        'cmd': cmd,
+                        'status': 'ok',
+                        'message': f'Preview generated: {len(paths)} image(s)',
+                        'paths': paths,
+                    }
+                    if req_id is not None:
+                        ack['req_id'] = req_id
+                    ack['selected_collections'] = self.selected_collections
+                    self._mqtt.publish(
+                        f'{self.mqtt_ack_prefix}/{cmd}',
+                        json.dumps(ack, separators=(',', ':')),
+                        qos=0,
+                        retain=False,
+                    )
+                except Exception as e:
+                    self._publish_ack(cmd, 'error', str(e), req_id)
                 return
             # Unknown command
             self._publish_ack(cmd, 'error', 'Unknown command', req_id)
