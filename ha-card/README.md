@@ -24,7 +24,7 @@ A custom [Home Assistant](https://www.home-assistant.io/) Lovelace card for cont
 - **Manual override** — hand-pick artwork from a per-collection carousel grid with S/M/L thumbnail size controls; Shuffle button previews a random set without committing it (a "● Preview" badge indicates the selection hasn't been applied yet); Apply pins the selection to the TV
 - **Saved Selections** — name and save any selection as a preset; presets are stored as a retained MQTT message so they sync across the web UI and all HA cards; includes one-click load, update, and delete. On first start the backend auto-generates thematic defaults (Landscapes, Marine, Impressionism, etc.) from your installed collections
 
-  ![Slideshow controls popup and manual override grid](images/hacard_slideshow_v0.2.1.png)
+  ![Slideshow controls popup and manual override grid](images/hacard_slideshow_v0.3.0.png)
 - **Not in art mode state** — when the TV is not in Art Mode the card collapses to a compact row showing the card title and a subtle "TV is not in art mode" label; controls are hidden until art mode resumes
 
   ![Card in not-in-art-mode state](images/hacard_art_mode_off_v0.2.1.png)
