@@ -149,35 +149,34 @@
     .sl-switch input:checked + .sl-slider { background: #2f7fbf; border-color: #2f7fbf; }
     .sl-switch input:checked + .sl-slider::before { transform: translateX(20px); background: #fff; }
 
-    /* Thumbnail grid */
-    .sl-grid {
+    /* Thumbnail grid — per-collection carousel layout */
+    .sl-grid { display: block; margin-top: 10px; }
+    .sl-coll-row { margin-bottom: 2px; }
+    .sl-coll-header {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase;
+      color: #b6aba4; padding: 6px 2px 4px;
+      border-bottom: 1px solid #3a2f2a; margin-top: 8px;
+    }
+    .sl-coll-row:first-child .sl-coll-header { margin-top: 0; }
+    .sl-coll-sel-badge {
+      font-size: 10px; font-weight: normal; text-transform: none; letter-spacing: 0;
+      color: #6ab0f5; background: rgba(47,127,191,0.18); border-radius: 10px; padding: 1px 6px;
+    }
+    .sl-coll-nav { margin-left: auto; display: flex; align-items: center; gap: 4px; font-weight: normal; text-transform: none; letter-spacing: 0; }
+    .sl-coll-nav-btn {
+      background: rgba(255,255,255,0.08); border: 1px solid #3a2f2a; color: #ccc;
+      width: 22px; height: 22px; border-radius: 4px; cursor: pointer; font-size: 10px;
+      display: inline-flex; align-items: center; justify-content: center; padding: 0; line-height: 1;
+    }
+    .sl-coll-nav-btn:disabled { opacity: 0.3; cursor: default; }
+    .sl-coll-page-lbl { font-size: 10px; color: rgba(255,255,255,0.35); min-width: 56px; text-align: center; }
+    .sl-coll-body {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(var(--sl-min, 130px), 1fr));
-      gap: 10px;
-      margin-top: 10px;
+      grid-template-columns: repeat(var(--sl-cols, 3), 1fr);
+      gap: 10px; padding: 8px 0 4px;
     }
-    .sl-section-header {
-      grid-column: 1 / -1;
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.5px;
-      text-transform: uppercase;
-      color: #b6aba4;
-      padding: 6px 2px 4px;
-      border-bottom: 1px solid #3a2f2a;
-      margin-top: 4px;
-      cursor: pointer;
-      user-select: none;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .sl-section-header:first-child { margin-top: 0; }
-    .sl-chevron { font-size: 9px; transition: transform 0.15s; display: inline-block; flex-shrink: 0; }
-    .sl-section-header.open .sl-chevron { transform: rotate(90deg); }
-    .sl-section-count { font-size: 10px; margin-left: auto; font-weight: normal; text-transform: none; letter-spacing: 0; }
-    .sl-section-body { display: contents; }
-    .sl-section-body.collapsed { display: none; }
+
     .sl-thumb {
       position: relative; border-radius: 8px; overflow: hidden; cursor: pointer;
       border: 2px solid transparent; background: #0d0c0b;
@@ -196,20 +195,70 @@
       transition: background 0.15s, border-color 0.15s;
     }
     .sl-thumb.selected .sl-thumb-check { background: #2f7fbf; border-color: #2f7fbf; }
-    /* Size slider */
-    .sl-size-slider {
-      -webkit-appearance: none; appearance: none;
-      width: 90px; height: 4px; border-radius: 2px;
-      background: #4a3d37; outline: none; cursor: pointer;
+    /* Size button group */
+    .sl-size-btns { display: flex; gap: 3px; }
+    .sl-size-btn {
+      padding: 4px 9px; font-size: 11px; font-weight: 600;
+      background: rgba(255,255,255,0.07); border: 1px solid #3a2f2a;
+      color: #b6aba4; border-radius: 5px; cursor: pointer;
     }
-    .sl-size-slider::-webkit-slider-thumb {
-      -webkit-appearance: none; width: 14px; height: 14px;
-      border-radius: 50%; background: #2f7fbf; cursor: pointer;
+    .sl-size-btn.active { background: rgba(47,127,191,0.3); border-color: #2f7fbf; color: #6ab0f5; }
+    .sl-save-btn {
+      padding: 4px 9px; font-size: 11px; font-weight: 600;
+      background: rgba(255,255,255,0.07); border: 1px solid #3a2f2a;
+      color: #b6aba4; border-radius: 5px; cursor: pointer;
     }
-    .sl-size-slider::-moz-range-thumb {
-      width: 14px; height: 14px; border: none;
-      border-radius: 50%; background: #2f7fbf; cursor: pointer;
+    .sl-save-btn:not([disabled]):hover { border-color: #2f7fbf; color: #6ab0f5; }
+    .sl-save-btn[disabled] { opacity: 0.4; cursor: default; }
+    .sl-presets-section { margin-top: 8px; border: 1px solid #3a2f2a; border-radius: 7px; overflow: hidden; }
+    .sl-presets-header {
+      display: flex; align-items: center; gap: 6px;
+      padding: 5px 8px;
+      background: #221e1b;
+      border-bottom: 1px solid #3a2f2a;
+      position: sticky; top: 0; z-index: 1;
     }
+    .sl-presets-title {
+      font-size: 10px; font-weight: 600; letter-spacing: 0.6px; text-transform: uppercase;
+      color: #6b5e56; margin-right: auto;
+    }
+    .sl-presets-clear {
+      padding: 4px 9px; font-size: 11px; font-weight: 600;
+      background: rgba(255,255,255,0.07); border: 1px solid #3a2f2a;
+      color: #b6aba4; border-radius: 5px; cursor: pointer;
+    }
+    .sl-presets-clear:hover { border-color: #c04040; color: #ff8080; }
+    .sl-presets-scroll { max-height: 110px; overflow-y: auto; padding: 6px 8px 4px; }
+    .sl-presets { display: flex; flex-wrap: wrap; gap: 10px; min-height: 0; }
+    .sl-preset-chip {
+      position: relative; display: inline-flex; align-items: center;
+      padding: 4px 10px; font-size: 11px; border-radius: 12px;
+      background: rgba(47,127,191,0.15); border: 1px solid rgba(47,127,191,0.35);
+      color: #8ac4f0; cursor: pointer; white-space: nowrap; user-select: none;
+      margin: 6px 6px 2px;
+    }
+    .sl-preset-chip:hover { background: rgba(47,127,191,0.28); border-color: #2f7fbf; }
+    .sl-preset-chip.active {
+      background: rgba(42,157,92,0.15); border: 1px solid rgba(42,157,92,0.35);
+      color: #6ecf9a;
+    }
+    .sl-preset-chip.active:hover { background: rgba(42,157,92,0.28); border-color: #2a9d5c; }
+    .sl-preset-del {
+      position: absolute; top: -5px; right: -5px;
+      width: 14px; height: 14px; border-radius: 50%;
+      background: rgba(140,30,30,0.85); border: 1px solid #c04040;
+      color: #ffaaaa; font-size: 9px; line-height: 12px; text-align: center;
+      display: none; cursor: pointer; z-index: 1;
+    }
+    .sl-preset-chip:hover .sl-preset-del { display: block; }
+    .sl-preset-upd {
+      position: absolute; top: -5px; left: -5px;
+      width: 14px; height: 14px; border-radius: 50%;
+      background: rgba(180,140,20,0.85); border: 1px solid #c9a820;
+      color: #fff8cc; font-size: 9px; line-height: 12px; text-align: center;
+      display: none; cursor: pointer; z-index: 1;
+    }
+    .sl-preset-chip:not(.active):hover .sl-preset-upd { display: block; }
 
     /* Dropdown multi-select styling (aligns with HA card visuals) */
     .ftv-controls { border-radius: 8px; }
@@ -235,10 +284,6 @@
     .ftv-apply { background: #2f7fbf; }
     .ftv-clear { background: #8b3a3a; }
     .ftv-apply svg, .ftv-clear svg { width: 22px; height: 22px; fill: #fff; display: block; }
-    #refresh { width: 40px; height: 40px; border: none; border-radius: 8px; display: flex; align-items: center; justify-content: center; background: #4a6fa5; }
-    #refresh svg { width: 22px; height: 22px; fill: #fff; display: block; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    #refresh.spinning svg { animation: spin 0.8s linear infinite; transform-origin: center; }
     @keyframes ftvApplyPulse {
       0%, 100% { background: #2f7fbf; }
       50% { background: #d4920a; }
@@ -251,7 +296,6 @@
     @media (max-width: 600px) {
       #viewSlideshow .ftv-row { flex-wrap: wrap; }
       #viewSlideshow .ftv-dropdown-wrap { flex: 1 1 100%; }
-      #viewSlideshow #refresh,
       #viewSlideshow .ftv-apply,
       #viewSlideshow .ftv-clear {
         /* Let buttons distribute evenly on the same line regardless of count */
@@ -363,9 +407,6 @@
                   </div>
                   <div class="ftv-dropdown" id="ftv-dropdown"></div>
                 </div>
-                <button id="refresh" class="ftv-apply" title="Refresh uploads">
-                  <svg viewBox="0 0 24 24"><path d="M12,6V9L16,5L12,1V4C7.58,4 4,7.58 4,12C4,13.85 4.63,15.55 5.69,16.88L7.1,15.47C6.41,14.53 6,13.32 6,12C6,8.69 8.69,6 12,6M18.31,7.12L16.9,8.53C17.59,9.47 18,10.68 18,12C18,15.31 15.31,18 12,18V15L8,19L12,23V20C16.42,20 20,16.42 20,12C20,10.15 19.37,8.45 18.31,7.12Z"/></svg>
-                </button>
                 <button class="ftv-apply" id="apply" title="Apply" disabled style="display:none;">
                   <svg viewBox="0 0 24 24"><path d="M9,20.42L2.79,14.21L5.62,11.38L9,14.77L18.88,4.88L21.71,7.71L9,20.42Z"/></svg>
                 </button>
@@ -388,14 +429,26 @@
           <div class="hint" style="margin-top:4px;">Interval: minutes between changes (0=disabled). Max uploads: artwork stored on TV.</div>
           <!-- Override panel -->
           <div id="sl-override-panel" style="margin-top:14px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-              <span id="sl-counter" class="hint">0 / 10 selected</span>
-              <span id="sl-mode-badge" class="hint"></span>
-              <div style="display:flex; align-items:center; gap:10px;">
-                <input type="range" id="sl-size" class="sl-size-slider" min="80" max="260" value="130" title="Thumbnail size">
-                <button id="sl-override-reset" style="display:none; padding:8px 14px; width:auto; height:auto;">Reset</button>
-                <button id="sl-override-apply" class="ftv-apply" disabled style="opacity:0.6; padding:8px 14px; width:auto; height:auto;">Apply Override</button>
-                <button id="sl-override-clear" class="ftv-clear" style="display:none; padding:8px 14px; width:auto; height:auto;">Clear Override</button>
+            <div style="display:flex; justify-content:flex-end; align-items:center; flex-wrap:wrap; gap:8px;">
+              <span id="sl-mode-badge" class="hint" style="margin-right:auto;"></span>
+              <div class="sl-size-btns">
+                <button class="sl-size-btn" data-size="s">S</button>
+                <button class="sl-size-btn active" data-size="m">M</button>
+                <button class="sl-size-btn" data-size="l">L</button>
+              </div>
+              <button id="sl-override-reset" style="display:none; padding:8px 14px; width:auto; height:auto;">Reset</button>
+              <button id="sl-preview-shuffle" style="padding:8px 14px; width:auto; height:auto;" title="Preview a random selection without uploading">Shuffle</button>
+              <button id="sl-override-apply" class="ftv-apply" disabled style="opacity:0.6; padding:8px 14px; width:auto; height:auto;">Apply</button>
+            </div>
+            <div id="sl-presets-section" class="sl-presets-section">
+              <div class="sl-presets-header">
+                <span class="sl-presets-title">Saved Selections</span>
+                <button id="sl-save-preset" class="sl-save-btn" disabled title="Save current selection as a new preset">Save New</button>
+                <button id="sl-generate-presets" class="sl-save-btn" title="Generate default saved selections from installed collections">Generate</button>
+                <button id="sl-presets-clear" class="sl-presets-clear" title="Clear all saved selections">Clear all</button>
+              </div>
+              <div class="sl-presets-scroll" id="sl-presets-scroll">
+                <div id="sl-presets" class="sl-presets"></div>
               </div>
             </div>
             <div id="sl-uploading-warn" style="display:none; padding:6px 0 0; font-size:0.8em; color:#ffb400;">
@@ -407,7 +460,7 @@
           <div id="sl-msg" class="hint" style="margin-top:8px;"></div>
         </div>
       </div>
-      <span class="version-tag">v0.2.8</span>
+      <span class="version-tag">v0.3.0</span>
     </div>
   </div>
   <script>
@@ -547,7 +600,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ broker: broker, username: username, password: password })
         }).catch(() => {});
-        client.subscribe([TOPIC_ATTR, TOPIC_STATE, TOPIC_COLL_ATTR, TOPIC_SELECTED, TOPIC_SETTINGS_ATTR, TOPIC_SLIDESHOW_STATE, TOPIC_SLIDESHOW_ATTR, TOPIC_SLIDESHOW_AVAIL, TOPIC_LOG, `${TOPIC_CMD_PREFIX}/collections/refresh`, `${TOPIC_ACK_PREFIX}/#`]);
+        client.subscribe([TOPIC_ATTR, TOPIC_STATE, TOPIC_COLL_ATTR, TOPIC_SELECTED, TOPIC_SETTINGS_ATTR, TOPIC_SLIDESHOW_STATE, TOPIC_SLIDESHOW_ATTR, TOPIC_SLIDESHOW_AVAIL, TOPIC_SLIDESHOW_PRESETS, TOPIC_LOG, `${TOPIC_CMD_PREFIX}/collections/refresh`, `${TOPIC_ACK_PREFIX}/#`]);
         requestSlideshowAvailable();
         scheduleAvailableRetry();
         // Retained messages arrive as a burst after subscribe. Defer sync so the
@@ -617,6 +670,13 @@
           if (topic === TOPIC_SLIDESHOW_ATTR) {
             try { updateSlideshowState(JSON.parse(payload.toString() || '{}')); } catch(_) {}
           }
+          if (topic === TOPIC_SLIDESHOW_PRESETS) {
+            try {
+              slideshowPresets = JSON.parse(payload.toString() || '[]');
+              if (!Array.isArray(slideshowPresets)) slideshowPresets = [];
+              renderPresets();
+            } catch(_) {}
+          }
           if (topic === TOPIC_SLIDESHOW_AVAIL) {
             try {
               const d = JSON.parse(payload.toString() || '{}');
@@ -637,7 +697,7 @@
                   const paths = slideshowMode === 'override' ? slideshowOverridePaths : slideshowCurrentPaths;
                   const seed = paths.filter(p => availPathSet.has(p));
                   if (seed.length) { slideshowSelected = new Set(seed); slideshowPostClear = false; }
-                } else {
+                } else if (!slideshowPreviewMode) {
                   // Prune any ghost selections that were carried over from a previous available list
                   slideshowSelected = new Set([...slideshowSelected].filter(p => availPathSet.has(p)));
                 }
@@ -707,6 +767,20 @@
                 const $m = document.getElementById('sl-msg');
                 if ($m) { $m.textContent = status === 'ok' ? 'Override cleared. Auto mode restored.' : `Error: ${ack.message||'unknown'}`; setTimeout(()=>{ if($m) $m.textContent=''; },5000); }
               }
+              if (cmd === 'slideshow/preview/request') {
+                slideshowShuffling = false;
+                const $btn = document.getElementById('sl-preview-shuffle');
+                if ($btn) { $btn.disabled = false; $btn.textContent = 'Shuffle'; }
+                if (status === 'ok' && Array.isArray(ack.paths) && ack.paths.length) {
+                  slideshowPreviewMode = true;
+                  slideshowSelected = new Set(ack.paths);
+                  updateSlCounter();
+                  renderSlideshowGrid();
+                } else {
+                  const $m = document.getElementById('sl-msg');
+                  if ($m) { $m.textContent = 'Preview returned no images.'; setTimeout(()=>{ if($m) $m.textContent=''; },4000); }
+                }
+              }
               setTimeout(() => { if ($envMsg.textContent) $envMsg.textContent=''; }, 8000);
             } catch (e) { /* ignore */ }
           }
@@ -729,9 +803,10 @@
     const TOPIC_SLIDESHOW_STATE = 'frame_tv/slideshow/state';
     const TOPIC_SLIDESHOW_ATTR  = 'frame_tv/slideshow/attributes';
     const TOPIC_SLIDESHOW_AVAIL = 'frame_tv/slideshow/available';
+    const TOPIC_SLIDESHOW_PRESETS = 'frame_tv/slideshow/presets';
     const TOPIC_LOG = 'frame_tv/log';
     const TOPIC_CMD_PREFIX = 'frame_tv/cmd';
-    const $refresh = document.getElementById('refresh');
+    const $refresh = null; // Refresh button removed — covered by Shuffle + Apply
     const TOPIC_ACK_PREFIX = 'frame_tv/ack';
 
     const $trigger = document.getElementById('ftv-trigger');
@@ -999,6 +1074,8 @@
       } else {
         $bg.style.background = '';
         if ($np) $np.classList.remove('standby-mode');
+        const $logEl = document.getElementById('refresh-log');
+        if ($logEl) $logEl.innerHTML = '';
         const _fb = (!title && !artist) ? parseArtworkInfo(file) : null;
         const _dispTitle = title || (_fb && _fb.title) || file || 'Selected Artwork';
         const _dispYear  = year  || (_fb && _fb.year)  || '';
@@ -1120,18 +1197,6 @@
         $tr.classList.remove('open');
         $dd.classList.remove('open');
       });
-    }
-    if ($refresh) {
-      $refresh.onclick = () => {
-        if ($refresh.disabled) return;
-        $refresh.classList.add('spinning');
-        $refresh.disabled = true;
-        $refresh.style.opacity = '0.7';
-        slideshowUserRefreshPending = true;
-        updateButtons();
-        updateGridLock();
-        client.publish(`${TOPIC_CMD_PREFIX}/collections/refresh`, JSON.stringify({ req_id: Date.now() }), { qos: 1, retain: false });
-      };
     }
     if ($apply) {
       $apply.onclick = () => {
@@ -1541,18 +1606,124 @@
       }, 5000);
     }
 
-    const $slCounter   = document.getElementById('sl-counter');
     const $slOApply    = document.getElementById('sl-override-apply');
     const $slOReset    = document.getElementById('sl-override-reset');
+    const $slSavePreset = document.getElementById('sl-save-preset');
+    const $slPresetsEl   = document.getElementById('sl-presets');
+    const $slPresetsSec   = document.getElementById('sl-presets-section');
+    const $slPresetsScroll = document.getElementById('sl-presets-scroll');
+    const $slPresetsClear = document.getElementById('sl-presets-clear');
+    if ($slPresetsClear) {
+      $slPresetsClear.addEventListener('click', () => { publishPresets([]); });
+    }
+
+    // ── Saved Presets (MQTT-backed, retained on frame_tv/slideshow/presets) ────────────
+    const SL_PRESETS_KEY = 'sl-presets'; // kept for migration only
+    let slideshowPresets = [];
+    function publishPresets(arr) {
+      if (typeof client !== 'undefined' && client) {
+        client.publish(TOPIC_CMD_PREFIX + '/slideshow/presets/set', JSON.stringify(arr), { qos: 1 });
+      }
+    }
+    function setsEqual(a, b) {
+      if (a.size !== b.size) return false;
+      for (const v of a) if (!b.has(v)) return false;
+      return true;
+    }
+    let _generatingPresets = false;
+    function renderPresets() {
+      if (!$slPresetsEl) return;
+      const presets = slideshowPresets;
+      if (_generatingPresets) {
+        _generatingPresets = false;
+        const btn = document.getElementById('sl-generate-presets');
+        if (btn) { btn.disabled = false; btn.textContent = 'Generate'; }
+      }
+      const $scrollDiv = document.getElementById('sl-presets-scroll');
+      if ($scrollDiv) $scrollDiv.style.display = presets.length ? '' : 'none';
+      if (!presets.length) { $slPresetsEl.innerHTML = ''; return; }
+      const _savedScroll = $scrollDiv ? $scrollDiv.scrollTop : 0;
+      $slPresetsEl.innerHTML = presets.map((p, i) => {
+        const active = setsEqual(slideshowSelected, new Set(p.paths));
+        return `<span class="sl-preset-chip${active ? ' active' : ''}" data-idx="${i}" title="${escapeHtml(p.name)} (${p.paths.length} images)">
+          ${escapeHtml(p.name)}
+          <span class="sl-preset-upd" data-upd="${i}" title="Update with current selection">&#8593;</span>
+          <span class="sl-preset-del" data-del="${i}" title="Delete preset">&times;</span>
+        </span>`;
+      }).join('');
+      if ($scrollDiv) $scrollDiv.scrollTop = _savedScroll;
+    }
+    if ($slSavePreset) {
+      $slSavePreset.addEventListener('click', () => {
+        if (!slideshowSelected.size) return;
+        const name = prompt('Name this selection:');
+        if (!name || !name.trim()) return;
+        const presets = [...slideshowPresets, { name: name.trim(), paths: [...slideshowSelected] }];
+        publishPresets(presets);
+      });
+    }
+    const $slGeneratePresets = document.getElementById('sl-generate-presets');
+    if ($slGeneratePresets) {
+      $slGeneratePresets.addEventListener('click', () => {
+        if (typeof client === 'undefined' || !client) return;
+        const orig = $slGeneratePresets.textContent;
+        $slGeneratePresets.disabled = true;
+        $slGeneratePresets.textContent = 'Generating…';
+        _generatingPresets = true;
+        client.publish(TOPIC_CMD_PREFIX + '/slideshow/presets/generate', JSON.stringify({ req_id: Date.now() }), { qos: 1 });
+      });
+    }
+    if ($slPresetsEl) {
+      $slPresetsEl.addEventListener('click', e => {
+        const del = e.target.closest('[data-del]');
+        if (del) {
+          const idx = parseInt(del.dataset.del, 10);
+          const presets = [...slideshowPresets];
+          presets.splice(idx, 1);
+          publishPresets(presets);
+          return;
+        }
+        const upd = e.target.closest('[data-upd]');
+        if (upd) {
+          if (!slideshowSelected.size) return;
+          const idx = parseInt(upd.dataset.upd, 10);
+          const presets = [...slideshowPresets];
+          if (!presets[idx]) return;
+          presets[idx] = { name: presets[idx].name, paths: [...slideshowSelected] };
+          publishPresets(presets);
+          return;
+        }
+        const chip = e.target.closest('.sl-preset-chip');
+        if (chip) {
+          const idx = parseInt(chip.dataset.idx, 10);
+          const preset = slideshowPresets[idx];
+          if (!preset) return;
+          slideshowSelected = new Set(preset.paths);
+          slideshowCarouselOffsets = {};
+          renderSlideshowGrid();
+        }
+      });
+    }
+    renderPresets();
     const $slOClear    = document.getElementById('sl-override-clear');
     const $slGrid      = document.getElementById('sl-grid');
     const $slGridHint  = document.getElementById('sl-grid-hint');
-    const $slSize      = document.getElementById('sl-size');
-    if ($slSize && $slGrid) {
-      $slSize.addEventListener('input', () => {
-        $slGrid.style.setProperty('--sl-min', $slSize.value + 'px');
+
+    // S/M/L size presets: [columns per carousel page]
+    const SL_SIZE_PRESETS = { s: 4, m: 3, l: 2 };
+    let slideshowCarouselCols = 3; // columns = items per carousel page
+    const $sizeBtns = document.querySelectorAll('.sl-size-btn');
+    $sizeBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        $sizeBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        slideshowCarouselCols = SL_SIZE_PRESETS[btn.dataset.size] || 6;
+        if ($slGrid) $slGrid.style.setProperty('--sl-cols', slideshowCarouselCols);
+        // Reset offsets so page indices stay valid at the new page size
+        slideshowCarouselOffsets = {};
+        renderSlideshowGrid();
       });
-    }
+    });
 
     let slideshowAvailable = [];
     let slideshowCurrentPaths = [];
@@ -1570,6 +1741,7 @@
     let slideshowPostClear = false;              // blocks size===0 reseed from stale current_paths after clear
     let slideshowClearRefreshPending = false;    // set when Clear fires collections/refresh
     let slideshowUserRefreshPending = false;     // set when user clicks Apply (collections) or Refresh
+    let slideshowPreviewMode = false;            // set when a shuffle preview has been loaded into the grid
 
     function updateSlideshowState(data) {
       try {
@@ -1589,13 +1761,9 @@
         slideshowMode = mode;
         const isOverride = mode === 'override';
         const modeChangedToAuto = prevMode === 'override' && !isOverride;
-        const $badge = document.getElementById('sl-mode-badge');
-        if ($badge) { $badge.textContent = isOverride ? '● Override active' : ''; $badge.style.color = '#2f7fbf'; }
         // Cancel any pending feedback timers and let MQTT immediately own the button state
         if ($slOApply && $slOApply._restoreTimer) { clearTimeout($slOApply._restoreTimer); $slOApply._restoreTimer = null; $slOApply._applying = false; }
-        if ($slOClear && $slOClear._restoreTimer) { clearTimeout($slOClear._restoreTimer); $slOClear._restoreTimer = null; }
-        if ($slOApply) { $slOApply.textContent = isOverride ? 'Update Override' : 'Apply Override'; $slOApply.style.opacity = ''; }
-        if ($slOClear) { $slOClear.style.display = isOverride ? '' : 'none'; $slOClear.textContent = 'Clear Override'; $slOClear.disabled = false; }
+        if ($slOApply) { $slOApply.textContent = 'Apply'; $slOApply.style.opacity = ''; }
         // Seed selection:
         //   - modeChangedToAuto: clear fired. current_paths is stale (all ever-uploaded).
         //     Always postClear=true. Keep existing selection visible if upload in progress.
@@ -1606,6 +1774,9 @@
         if (modeChangedToAuto) {
           // Override just cleared. current_paths is stale (union of all ever-uploaded files).
           // Always set postClear to block any reseed from it — grid should stay empty.
+          slideshowPreviewMode = false;
+          const $shuf = document.getElementById('sl-preview-shuffle');
+          if ($shuf && !slideshowShuffling) $shuf.textContent = 'Shuffle';
           slideshowPostClear = true;
           if (slideshowUploading) {
             // Upload already in progress: keep existing selection visible (locked) during the cycle.
@@ -1619,6 +1790,9 @@
           slideshowPostClear = false;
           slideshowReverting = false;
         } else if (uploadJustFinished) {
+          slideshowPreviewMode = false;
+          const $shuf = document.getElementById('sl-preview-shuffle');
+          if ($shuf && !slideshowShuffling) $shuf.textContent = 'Shuffle';
           schedulePostUploadAvailableRefresh(5);
           slideshowReverting = false;
           if (isOverride) {
@@ -1641,9 +1815,11 @@
             slideshowUserRefreshPending = true;
           }
         } else if (isOverride && !slideshowUploading && !slideshowPostClear
-            && slideshowOverridePaths.length) {
+            && slideshowOverridePaths.length && !slideshowPreviewMode) {
           // Mode unchanged, override active: resync from server-authoritative override_paths
           // (handles server-side pruning of deleted files from override state).
+          // Guard !slideshowPreviewMode so a shuffle preview is never clobbered by a
+          // periodic SLIDESHOW_STATE message arriving after the ack is processed.
           slideshowSelected = new Set(slideshowOverridePaths);
         } else if (!slideshowReverting && !slideshowPostClear && slideshowSelected.size === 0 && !slideshowUploading) {
           // Initial load or settled state: seed from appropriate paths.
@@ -1682,7 +1858,7 @@
         $warn.textContent = slideshowUploading ? '\u26a0 Uploading \u2014 grid locked' : slideshowUserRefreshPending ? '\u26a0 Applying \u2014 grid locked' : '\u26a0 Standby \u2014 grid locked';
       }
       if ($slGrid) { $slGrid.style.pointerEvents = locked ? 'none' : ''; $slGrid.style.opacity = locked ? '0.45' : ''; }
-      if ($slOApply && locked) { $slOApply.disabled = true; $slOApply.style.opacity = 0.4; }
+      if ($slOApply && locked && !slideshowPreviewMode) { $slOApply.disabled = true; $slOApply.style.opacity = 0.4; }
       if ($slOReset && locked) $slOReset.style.display = 'none';
     }
 
@@ -1700,6 +1876,8 @@
     function selectionMatchesBaseline() {
       // After clearing override: empty grid is the correct post-clear state — treat as in-sync.
       if (slideshowPostClear) return true;
+      // A shuffle preview is by definition different from the committed baseline.
+      if (slideshowPreviewMode) return false;
       const baseline = slideshowMode === 'override' ? slideshowOverridePaths : slideshowCurrentPaths;
       // overridePaths empty while mode=override means the server hasn't confirmed the
       // applied paths yet — treat as in-sync so Apply stays disabled during that window.
@@ -1709,18 +1887,28 @@
     }
 
     function updateSlCounter() {
-      if (!$slCounter) return;
       const count = slideshowSelected.size;
-      $slCounter.textContent = `${count} / ${slideshowMaxUploads} selected`;
+      if ($slSavePreset) $slSavePreset.disabled = count === 0;
+      const differs = !selectionMatchesBaseline();
       if ($slOApply) {
-        const canApply = count > 0 && !slideshowUploading && !selectionMatchesBaseline();
+        const canApply = count > 0 && !slideshowUploading && differs;
         $slOApply.disabled = !canApply;
         $slOApply.style.opacity = canApply ? 1 : (slideshowUploading ? 0.4 : 0.6);
       }
       if ($slOReset) {
         const locked = slideshowUploading || slideshowUserRefreshPending || (slideshowStandby && slideshowMode !== 'override');
-        $slOReset.style.display = (locked || selectionMatchesBaseline()) ? 'none' : '';
+        $slOReset.style.display = (locked || !differs) ? 'none' : '';
       }
+      const $badge = document.getElementById('sl-mode-badge');
+      if ($badge) {
+        if (differs) {
+          $badge.textContent = '\u25CF Preview';
+          $badge.style.color = '#d4920a';
+        } else {
+          $badge.textContent = '';
+        }
+      }
+      renderPresets();
     }
 
     function preloadThumbnails(images) {
@@ -1740,8 +1928,14 @@
       for (let i = 0; i < Math.min(CONCURRENCY, urls.length); i++) next();
     }
 
+    const CAROUSEL_PAGE = 3; // base value; at runtime slideshowCarouselCols overrides this
+    let slideshowCarouselOffsets = {};
+    let _carouselObserver = null;
+
     function renderSlideshowGrid() {
       if (!$slGrid) return;
+      const COLS = (typeof slideshowCarouselCols !== 'undefined') ? slideshowCarouselCols : CAROUSEL_PAGE;
+      $slGrid.style.setProperty('--sl-cols', COLS);
       updateSlCounter();
       if (!slideshowAvailable.length) {
         $slGrid.innerHTML = '';
@@ -1749,61 +1943,164 @@
         return;
       }
       if ($slGridHint) $slGridHint.textContent = `${slideshowAvailable.length} image(s) in selected collections`;
-      const atMax = slideshowSelected.size >= slideshowMaxUploads;
+
+      const availPathSet = new Set(slideshowAvailable.map(img => img.path));
+
+      // Group ALL images (selected + unselected together) by collection key.
+      const collMap = new Map();
+      for (const img of slideshowAvailable) {
+        const key = (img.artist && img.artist.trim()) ? img.artist.trim() : (img.folder || 'Unknown');
+        if (!collMap.has(key)) collMap.set(key, []);
+        collMap.get(key).push(img);
+      }
+      // Synthesize entries for selected paths beyond the 500-cap so they appear in their collection.
+      for (const path of slideshowSelected) {
+        if (!availPathSet.has(path)) {
+          const lastSlash = path.lastIndexOf('/');
+          const folder = lastSlash > 0 ? path.substring(0, lastSlash) : '';
+          const file = lastSlash >= 0 ? path.substring(lastSlash + 1) : path;
+          const img = { path, folder, file, title: '', artist: folder, year: '', uploaded: false };
+          const key = folder || 'Unknown';
+          if (!collMap.has(key)) collMap.set(key, []);
+          collMap.get(key).push(img);
+        }
+      }
+      const sortedKeys = [...collMap.keys()].sort((a, b) => a.localeCompare(b));
 
       function thumbHtml(img) {
-        const isSelected = slideshowSelected.has(img.path);
-        const isDisabled = !isSelected && atMax;
+        const isSel = slideshowSelected.has(img.path);
         const thumbUrl = `${location.origin}/app/frame_tv_art_collections/${encodeURIComponent(img.folder)}/${encodeURIComponent(img.file)}`;
-        return `<div class="sl-thumb${isSelected ? ' selected' : ''}${isDisabled ? ' disabled' : ''}" data-path="${escapeHtml(img.path)}">
-          <img src="${thumbUrl}" loading="${preloadEnabled ? 'eager' : 'lazy'}" alt="${escapeHtml(img.title || img.file)}" onerror="this.style.display='none'">
-          <div class="sl-thumb-check">${isSelected ? '\u2713' : ''}</div>
+        return `<div class="sl-thumb${isSel ? ' selected' : ''}" data-path="${escapeHtml(img.path)}">
+          <img data-src="${thumbUrl}" alt="${escapeHtml(img.title || img.file)}" onerror="this.style.display='none'">
+          <div class="sl-thumb-check">${isSel ? '\u2713' : ''}</div>
         </div>`;
       }
 
-      let sectionIdx = 0;
-      function sectionHtml(label, images, expanded) {
-        const bodyId = `sl-body-${sectionIdx++}`;
-        return `<div class="sl-section-header${expanded ? ' open' : ''}" data-body="${bodyId}">
-          <span class="sl-chevron">&#9654;</span>${escapeHtml(label)}<span class="sl-section-count hint">${images.length}</span>
-        </div>
-        <div class="sl-section-body${expanded ? '' : ' collapsed'}" id="${bodyId}">${images.map(thumbHtml).join('')}</div>`;
+      // Build "Selected" summary section (all selected images flat, no pagination needed).
+      const selectedImgs = slideshowAvailable.filter(img => slideshowSelected.has(img.path));
+      for (const path of slideshowSelected) {
+        if (!availPathSet.has(path)) {
+          const lastSlash = path.lastIndexOf('/');
+          const folder = lastSlash > 0 ? path.substring(0, lastSlash) : '';
+          const file = lastSlash >= 0 ? path.substring(lastSlash + 1) : path;
+          selectedImgs.push({ path, folder, file, title: '', artist: folder, year: '', uploaded: false });
+        }
       }
 
-      const selected = slideshowAvailable.filter(img => slideshowSelected.has(img.path));
-      const unselected = slideshowAvailable.filter(img => !slideshowSelected.has(img.path));
-      const byArtist = {};
-      for (const img of unselected) {
-        const key = img.artist && img.artist.trim() ? img.artist.trim() : (img.folder || 'Unknown');
-        if (!byArtist[key]) byArtist[key] = [];
-        byArtist[key].push(img);
-      }
+      // Preserve scroll position across re-renders triggered by thumb toggles.
+      const $scrollEl = document.getElementById('viewSlideshow');
+      const savedScroll = $scrollEl ? $scrollEl.scrollTop : 0;
+      // Save presets scroll BEFORE innerHTML wipe detaches the node (scrollTop becomes 0 once detached).
+      const _presetsScrollDiv = document.getElementById('sl-presets-scroll');
+      const _savedPresetsScroll = _presetsScrollDiv ? _presetsScrollDiv.scrollTop : 0;
 
       let html = '';
-      if (selected.length) {
-        html += sectionHtml(`Selected (${selected.length})`, selected, true);
+      // Selected overview at top
+      if (selectedImgs.length) {
+        html += `<div class="sl-coll-row">
+          <div class="sl-coll-header" data-body="sl-cc-sel">
+            Selected (${selectedImgs.length})
+          </div>
+          <div class="sl-coll-body" id="sl-cc-sel">${selectedImgs.map(thumbHtml).join('')}</div>
+        </div>`;
       }
-      for (const [artist, images] of Object.entries(byArtist).sort(([a],[b]) => a.localeCompare(b))) {
-        html += sectionHtml(artist, images, true);
-      }
+      // Per-collection carousels
+      sortedKeys.forEach((key, idx) => {
+        const images = collMap.get(key);
+        const selCount = images.filter(img => slideshowSelected.has(img.path)).length;
+        const total = images.length;
+        // Default offset: page containing the first selected image in this collection.
+        let offset = slideshowCarouselOffsets[key];
+        if (offset === undefined) {
+          if (selCount > 0) {
+            const firstSelIdx = images.findIndex(img => slideshowSelected.has(img.path));
+            offset = Math.floor(firstSelIdx / COLS) * COLS;
+          } else {
+            offset = 0;
+          }
+        }
+        const maxOffset = Math.max(0, Math.floor((total - 1) / COLS) * COLS);
+        offset = Math.max(0, Math.min(offset, maxOffset));
+        slideshowCarouselOffsets[key] = offset;
+        const pageEnd = Math.min(offset + COLS, total);
+        const bodyId = `sl-cc-${idx}`;
+        html += `<div class="sl-coll-row">
+          <div class="sl-coll-header" data-body="${bodyId}">
+            ${escapeHtml(key)}
+            ${selCount > 0 ? `<span class="sl-coll-sel-badge">${selCount} selected</span>` : ''}
+            <div class="sl-coll-nav">
+              <button class="sl-coll-nav-btn" data-key="${escapeHtml(key)}" data-dir="-1"${offset > 0 ? '' : ' disabled'}>&#9664;</button>
+              <span class="sl-coll-page-lbl">${offset + 1}&ndash;${pageEnd}&nbsp;/&nbsp;${total}</span>
+              <button class="sl-coll-nav-btn" data-key="${escapeHtml(key)}" data-dir="1"${pageEnd < total ? '' : ' disabled'}>&#9654;</button>
+            </div>
+          </div>
+          <div class="sl-coll-body" id="${bodyId}">${images.slice(offset, pageEnd).map(thumbHtml).join('')}</div>
+        </div>`;
+      });
+
       $slGrid.innerHTML = html;
 
-      // Wire collapsible headers
-      $slGrid.querySelectorAll('.sl-section-header').forEach(hdr => {
-        hdr.addEventListener('click', () => {
-          const body = document.getElementById(hdr.dataset.body);
-          const open = hdr.classList.toggle('open');
-          if (body) body.classList.toggle('collapsed', !open);
+      // Re-insert the presets section into the grid, inside the Selected row between header and thumbnails.
+      if ($slPresetsSec) {
+        const selBody = $slGrid.querySelector('#sl-cc-sel');
+        if (selBody) selBody.before($slPresetsSec);
+        else $slGrid.prepend($slPresetsSec);
+        // Query AFTER re-insertion so getElementById finds the element back in the document.
+        const $presetsScrollDiv = document.getElementById('sl-presets-scroll');
+        if ($presetsScrollDiv) $presetsScrollDiv.scrollTop = _savedPresetsScroll;
+      }
+
+      if ($scrollEl) $scrollEl.scrollTop = savedScroll;
+
+      // Intersection-based lazy loading: only load images as they scroll into view
+      // within the slideshow panel. Falls back to eager if IntersectionObserver unavailable.
+      if (_carouselObserver) { _carouselObserver.disconnect(); _carouselObserver = null; }
+      const _lzRoot = document.getElementById('viewSlideshow');
+      if (_lzRoot && 'IntersectionObserver' in window) {
+        _carouselObserver = new IntersectionObserver((entries) => {
+          entries.forEach(e => {
+            if (e.isIntersecting && e.target.dataset.src) {
+              e.target.src = e.target.dataset.src;
+              delete e.target.dataset.src;
+              _carouselObserver.unobserve(e.target);
+            }
+          });
+        }, { root: _lzRoot, rootMargin: '150px' });
+        $slGrid.querySelectorAll('img[data-src]').forEach(img => _carouselObserver.observe(img));
+      } else {
+        $slGrid.querySelectorAll('img[data-src]').forEach(img => { img.src = img.dataset.src; delete img.dataset.src; });
+      }
+      // Carousel prev/next navigation
+      $slGrid.querySelectorAll('.sl-coll-nav-btn:not([disabled])').forEach(btn => {
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          const key = btn.dataset.key;
+          const dir = parseInt(btn.dataset.dir, 10);
+          const images = collMap.get(key) || [];
+          const cur = slideshowCarouselOffsets[key] || 0;
+          const maxOff = Math.max(0, Math.floor((images.length - 1) / COLS) * COLS);
+          slideshowCarouselOffsets[key] = Math.max(0, Math.min(cur + dir * COLS, maxOff));
+          renderSlideshowGrid();
         });
       });
 
+      // Thumb click: toggle selection
       $slGrid.querySelectorAll('.sl-thumb').forEach(el => {
         el.addEventListener('click', () => {
-          if (el.classList.contains('disabled')) return;
           if (slideshowUploading) return;
+          if (slideshowPreviewMode) {
+            slideshowPreviewMode = false;
+            const $shuf = document.getElementById('sl-preview-shuffle');
+            if ($shuf) $shuf.textContent = 'Shuffle';
+          }
           const path = el.dataset.path;
           if (slideshowSelected.has(path)) { slideshowSelected.delete(path); }
-          else { if (slideshowSelected.size >= slideshowMaxUploads) return; slideshowSelected.add(path); }
+          else { slideshowSelected.add(path); }
+          const newCount = slideshowSelected.size;
+          if (newCount > 0) {
+            slideshowMaxUploads = newCount;
+            if ($slMaxUploads && !$slMaxUploads.dataset.dirty) $slMaxUploads.value = newCount;
+          }
           updateSlCounter();
           renderSlideshowGrid();
         });
@@ -1833,22 +2130,28 @@
       $slOApply.onclick = () => {
         if (!client || !slideshowSelected.size) return;
         const paths = Array.from(slideshowSelected);
-        const origLabel = $slOApply.textContent;
         $slOApply.disabled = true;
         $slOApply._applying = true;
         $slOApply.textContent = 'Applying…';
         $slOApply.style.opacity = 0.7;
-        // If the collection dropdown has staged (unapplied) changes, include them
-        // in the same payload so both are committed atomically — no separate Apply
-        // (collections) click required.
+        const wasPreview = !!slideshowPreviewMode;
+        slideshowPreviewMode = false;
+        const $shuf = document.getElementById('sl-preview-shuffle');
+        if ($shuf) $shuf.textContent = 'Shuffle';
+        // Build payload; if selection differs from server-confirmed max, update it
         const payload = { paths, req_id: Date.now() };
+        if (paths.length !== slMaxUploadsBaseline) {
+          payload.max_uploads = paths.length;
+          slideshowMaxUploads = paths.length;
+          if ($slMaxUploads && !$slMaxUploads.dataset.dirty) $slMaxUploads.value = paths.length;
+        }
         if (dirty && staged.length) payload.collections = staged;
         client.publish(`${TOPIC_CMD_PREFIX}/slideshow/override/set`, JSON.stringify(payload), { qos: 1 });
         // Safety fallback only — MQTT response will cancel this and set state directly
         $slOApply._restoreTimer = setTimeout(() => {
           $slOApply._applying = false;
           $slOApply._restoreTimer = null;
-          $slOApply.textContent = slideshowMode === 'override' ? 'Update Override' : origLabel;
+          $slOApply.textContent = 'Apply';
           const canApply = slideshowSelected.size > 0 && !slideshowUploading && !selectionMatchesBaseline();
           $slOApply.disabled = !canApply;
           $slOApply.style.opacity = canApply ? 1 : 0.6;
@@ -1858,6 +2161,9 @@
 
     if ($slOReset) {
       $slOReset.onclick = () => {
+        slideshowPreviewMode = false;
+        const $btn = document.getElementById('sl-preview-shuffle');
+        if ($btn) $btn.textContent = 'Shuffle';
         const baseline = slideshowMode === 'override' ? slideshowOverridePaths : slideshowCurrentPaths;
         slideshowSelected = new Set(baseline);
         updateSlCounter();
@@ -1865,19 +2171,31 @@
       };
     }
 
-    if ($slOClear) {
-      $slOClear.onclick = () => {
+    let slideshowShuffling = false; // true while a preview request is in-flight
+
+    const $slShuffle = document.getElementById('sl-preview-shuffle');
+    if ($slShuffle) {
+      $slShuffle.onclick = () => {
         if (!client) return;
-        $slOClear.disabled = true;
-        $slOClear.textContent = 'Clearing…';
-        // Fire a full collections/refresh: clears override, prunes TV storage,
-        // and reseeds from current collections — guaranteeing current_paths is fresh.
-        slideshowClearRefreshPending = true;
-        client.publish(`${TOPIC_CMD_PREFIX}/collections/refresh`, JSON.stringify({ req_id: Date.now() }), { qos: 1 });
-        // Safety fallback — modeChangedToAuto MQTT response normally cancels this first
-        $slOClear._restoreTimer = setTimeout(() => { $slOClear._restoreTimer = null; $slOClear.disabled = false; $slOClear.textContent = 'Clear Override'; }, 8000);
+        slideshowShuffling = true;
+        $slShuffle.disabled = true;
+        $slShuffle.textContent = 'Shuffling\u2026';
+        const payload = { req_id: Date.now() };
+        // If the collection dropdown has staged (unapplied) changes, preview against those.
+        if (dirty && staged.length) payload.collections = staged;
+        client.publish(`${TOPIC_CMD_PREFIX}/slideshow/preview/request`, JSON.stringify(payload), { qos: 1 });
+        // Safety fallback — ack handler will re-enable; this covers lost messages
+        setTimeout(() => {
+          if ($slShuffle.disabled) {
+            slideshowShuffling = false;
+            $slShuffle.disabled = false;
+            $slShuffle.textContent = 'Shuffle';
+          }
+        }, 20000);
       };
     }
+
+    // Clear Override button removed — use the top Refresh button to wipe and reseed the TV.
   </script>
 </body>
 </html>

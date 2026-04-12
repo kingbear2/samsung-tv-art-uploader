@@ -12,7 +12,7 @@ Built on top of [NickWaterton/samsung-tv-ws-api](https://github.com/NickWaterton
 
 > **Upgrading from v0.1.x?** See the [v0.2.0 release notes](https://github.com/kohlerryan/samsung-tv-art-uploader/releases/tag/v0.2.0) for breaking changes and what's new.
 
-> **Upgrading from v0.2.x?** See the [v0.2.8 release notes](https://github.com/kohlerryan/samsung-tv-art-uploader/releases/tag/v0.2.8) for what's new.
+> **Upgrading from v0.2.x?** See the [v0.3.0 release notes](https://github.com/kohlerryan/samsung-tv-art-uploader/releases/tag/v0.3.0) for what's new.
 
 ## Features
 
@@ -21,6 +21,8 @@ Built on top of [NickWaterton/samsung-tv-ws-api](https://github.com/NickWaterton
 - Publishes artwork metadata (title, artist, description, collection) to MQTT for Home Assistant
 - MQTT discovery — entities are auto-created in HA with no manual YAML
 - Built-in web UI (port 8080) for collection selection, settings, and manual refresh
+- **Saved Selections** — name and save any image set as a preset; synced across all clients via retained MQTT; auto-generates thematic defaults (Landscapes, Marine, Impressionism, etc.) on first start
+- **Per-collection carousels** with S/M/L thumbnail size controls and a shuffle preview mode
 - [Home Assistant Lovelace card](https://github.com/kohlerryan/samsung-tv-art-card) with live progress display during refresh operations
 - mDNS advertisement (`samsung-tv-art.local`) via Avahi — requires `network_mode: host`, macvlan, or macvlan+bridge (see compose example)
 
@@ -315,10 +317,10 @@ When `SAMSUNG_TV_ART_LOCAL_WEB=true`, a web interface is available at `http://sa
 
 | Slideshow Override | Mobile |
 |---|---|
-| ![Web UI Slideshow](assets/webui_slideshow_v0.2.2.png) | ![Web UI Mobile](assets/webui_mobile_now_showing_v0.2.2.png) |
+| ![Web UI Slideshow](assets/webui_slideshow_v0.3.0.png) | ![Web UI Mobile](assets/webui_mobile_now_showing_v0.2.2.png) |
 
 - **Collections** tab — select which collections are active and trigger a refresh
-- **Slideshow** tab — pick a fixed set of images to pin to the TV (Override mode), or configure the rotation interval and upload limit
+- **Slideshow** tab — browse available images in per-collection carousels (S/M/L size), hand-pick a fixed set to pin to the TV, shuffle for a preview before committing, and manage named **Saved Selections** that sync across all clients via MQTT
 - **Settings** tab — adjust MQTT/TV connection settings without restarting the container; includes a **Preload thumbnails** toggle (off by default) that eagerly fetches all slideshow images instead of loading them as you scroll. Action buttons are automatically disabled (with an explanatory message) when the TV is not in Art Mode, and show in-progress text while a command is pending
 - **Now Showing metadata** — the artwork info section (artist, title, description) scrolls when content overflows; a soft fade at the bottom of the section indicates more content is available below
 
@@ -335,7 +337,7 @@ See [`ha-card/README.md`](ha-card/README.md) for installation steps and [`exampl
 
 | Card — Slideshow Override | Card — Settings |
 |---|---|
-| ![HA Card Slideshow](assets/hacard_slideshow_v0.2.1.png) | ![HA Card Settings](assets/hacard_settings_v0.2.2.png) |
+| ![HA Card Slideshow](assets/hacard_slideshow_v0.3.0.png) | ![HA Card Settings](assets/hacard_settings_v0.2.2.png) |
 
 ### Mixed-content / image URLs
 
@@ -393,11 +395,11 @@ samsung-tv-art/
 │   ├── hacard_collection_selection_v0.2.1.png           — HA card collection selector
 │   ├── hacard_dynamic_v0.2.1.png                        — HA card dynamic layout
 │   ├── hacard_fixed_art_details_v0.2.1.png              — HA card fixed layout art detail overlay
-│   ├── hacard_slideshow_v0.2.1.png                      — HA card slideshow override panel
+│   ├── hacard_slideshow_v0.3.0.png                      — HA card slideshow override panel
 │   ├── hacard_settings_v0.2.2.png                       — HA card settings panel
 │   ├── webui_now_showing_v0.2.2.png                     — web UI now showing tab
 │   ├── webui_mobile_now_showing_v0.2.2.png              — web UI mobile now showing
-│   ├── webui_slideshow_v0.2.2.png                       — web UI slideshow tab
+│   ├── webui_slideshow_v0.3.0.png                       — web UI slideshow tab
 │   └── webui_settings_v0.2.3.png                        — web UI settings tab
 ├── ha-card/
 │   ├── samsung-tv-art-card.js   — Home Assistant Lovelace card
