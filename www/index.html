@@ -43,7 +43,6 @@
       .card { border-radius: 0; border: none; box-shadow: none; padding: 16px 0 0; }
       .tabbar { margin-left: 12px; }
       .tabcontent { border-radius: 0; border-left: none; border-right: none; border-bottom: none; }
-      .version-tag { padding-right: 12px; }
     }
     .card {
       width: 100%;
@@ -96,7 +95,10 @@
 
     /* Tabs styled like folder (pentaflex) tabs */
     .tabbar { display: flex; gap: 6px; margin: 0 0 0 12px; align-items: flex-end; }
-    .version-tag { display: block; text-align: right; padding: 1px 12px 2px; font-size: 11px; color: #7a6e68; letter-spacing: .4px; user-select: none; pointer-events: none; }
+    .card-footer { display: flex; align-items: center; justify-content: space-between; padding: 1px 12px 2px; }
+    .version-tag { font-size: 11px; color: #7a6e68; letter-spacing: .4px; user-select: none; pointer-events: none; }
+    .bmc-link { font-size: 11px; color: #7a6e68; letter-spacing: .3px; text-decoration: none; transition: color 0.15s; }
+    .bmc-link:hover { color: #f7ce65; }
     .tab {
       padding: 8px 14px;
       background: #2a2623;
@@ -460,7 +462,10 @@
           <div id="sl-msg" class="hint" style="margin-top:8px;"></div>
         </div>
       </div>
-      <span class="version-tag">v0.3.0</span>
+      <div class="card-footer">
+        <a class="bmc-link" href="https://buymeacoffee.com/kohlerryan" target="_blank" rel="noopener noreferrer">☕ Buy me a coffee</a>
+        <span class="version-tag">v0.3.0</span>
+      </div>
     </div>
   </div>
   <script>
