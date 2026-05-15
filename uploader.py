@@ -486,7 +486,10 @@ class monitor_and_display:
         import socket
         from samsungtvws.async_art import SamsungTVAsyncArt
         device_name = os.environ.get('SAMSUNG_TV_ART_DEVICE_NAME') or socket.gethostname() or 'SamsungTvRemote'
-        self.tv = SamsungTVAsyncArt(host=self.ip, port=8002, token_file=self.token_file, name=device_name)
+        # Port 8002 is the SSL WebSocket (default for most models). Some Tizen 9.0
+        # firmwares (Frame 2024+) filter 8002 and require the plain port 8001.
+        tv_port = int(os.environ.get('SAMSUNG_TV_ART_PORT', '8002'))
+        self.tv = SamsungTVAsyncArt(host=self.ip, port=tv_port, token_file=self.token_file, name=device_name)
         self._artmode_event = asyncio.Event()
         self._register_artmode_callbacks()
 
