@@ -1883,14 +1883,14 @@
     // intentionally separated so each style is visually distinguishable at a
     // glance — shadowbox is the deepest mount, modern the thinnest.
     const _MATTE_THICK_MAP = {
-      shadowbox: 10, modernthin: 2, modern: 5, modernwide: 16,
+      shadowbox: 10, modernthin: 4, modern: 10, modernwide: 32,
       flexible: 5, panoramic: 8
     };
     // Per-type base thickness (px) for the modal-scale preview. The modal
     // shows a near-fullscreen image so the matte band can be much chunkier;
     // larger separation between styles is much easier to read at this size.
     const _MATTE_THICK_MAP_MODAL = {
-      shadowbox: 56, modernthin: 8, modern: 22, modernwide: 64,
+      shadowbox: 56, modernthin: 16, modern: 44, modernwide: 128,
       flexible: 22, panoramic: 44
     };
     // Build a per-type CSS style string that visually approximates each Samsung

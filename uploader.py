@@ -3543,9 +3543,29 @@ class monitor_and_display:
             await self.tv.select_image(content_id)
             self.shown_content_ids.add(content_id)  # Mark as shown
             self.current_content_id = content_id
+            await self._reapply_matte_for(content_id)
             await self.update_ha_selected_artwork(content_id)
         else:
             self.log.info('skipping art update, as new content_id: %s is the same', content_id)
+
+    async def _reapply_matte_for(self, content_id):
+        '''Re-apply the per-image (or global) matte after select_image. The TV's
+        built-in slideshow tends to snap each image back to its upload-time matte
+        when it cycles, so when WE drive the slideshow we must restate the matte
+        on every cycle for our overrides to actually stick on screen.'''
+        try:
+            path_rel = None
+            fname = None
+            for k, v in self.uploaded_files.items():
+                if v.get('content_id') == content_id:
+                    path_rel = v.get('path_rel') or k
+                    fname = os.path.basename(path_rel) if path_rel else k
+                    break
+            effective = self._resolve_matte_for(path_rel, fname) or 'none'
+            await self.tv.change_matte(content_id, effective, portrait_matte=effective)
+            self.log.debug('reapplied matte %s for content_id=%s (path=%s)', effective, content_id, path_rel)
+        except Exception as ex:
+            self.log.debug('change_matte (cycle) failed for %s: %s', content_id, ex)
     
     async def check_dir(self):
         '''
