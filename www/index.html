@@ -231,6 +231,76 @@
       text-overflow: ellipsis;
     }
     .sl-thumb-matte.has-override { border-color: #6ab0f5; color: #6ab0f5; background: rgba(47,127,191,0.18); }
+
+    /* ── Modal preview (double-click a thumbnail) ────────────────────────────────── */
+    .sl-modal-overlay {
+      position: fixed; inset: 0; z-index: 10000;
+      background: rgba(0,0,0,0.88);
+      display: flex; align-items: center; justify-content: center;
+      padding: 24px;
+    }
+    .sl-modal-content {
+      position: relative;
+      max-width: 95vw; max-height: 95vh;
+      display: flex; flex-direction: column;
+      background: #1a1614; border: 1px solid #3a2f2a; border-radius: 10px;
+      padding: 18px 18px 14px;
+      gap: 12px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+    }
+    .sl-modal-close {
+      position: absolute; top: 8px; right: 12px;
+      background: transparent; border: none; color: #b6aba4;
+      font-size: 24px; cursor: pointer; line-height: 1;
+      padding: 4px 8px; border-radius: 4px;
+    }
+    .sl-modal-close:hover { color: #fff; background: rgba(255,255,255,0.08); }
+    .sl-modal-img-wrap {
+      position: relative;
+      flex: 1; min-height: 0;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .sl-modal-img-frame {
+      position: relative;
+      max-width: 100%; max-height: 78vh;
+      display: inline-flex;
+    }
+    .sl-modal-img-frame img {
+      max-width: 100%; max-height: 78vh;
+      display: block;
+      object-fit: contain;
+    }
+    .sl-modal-matte-preview {
+      position: absolute; inset: 0;
+      pointer-events: none;
+    }
+    .sl-modal-meta {
+      color: #b6aba4; font-size: 12px; text-align: center;
+      max-width: 80vw;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .sl-modal-meta strong { color: #e6dcd4; }
+    .sl-modal-controls {
+      display: flex; gap: 14px; align-items: center; justify-content: center;
+      flex-wrap: wrap;
+    }
+    .sl-modal-controls label { font-size: 12px; color: #b6aba4; }
+    .sl-modal-controls select {
+      font-size: 13px; padding: 5px 9px;
+      background: #0d0c0b; color: #e6dcd4;
+      border: 1px solid #4a3d37; border-radius: 5px;
+      min-width: 200px;
+    }
+    .sl-modal-controls .sl-modal-toggle {
+      font-size: 12px; font-weight: 600;
+      padding: 6px 14px; cursor: pointer;
+      background: rgba(255,255,255,0.07); border: 1px solid #3a2f2a;
+      color: #b6aba4; border-radius: 5px;
+    }
+    .sl-modal-controls .sl-modal-toggle.selected {
+      background: rgba(47,127,191,0.25); border-color: #2f7fbf; color: #6ab0f5;
+    }
+    .sl-modal-controls .sl-modal-toggle:hover { border-color: #6ab0f5; color: #fff; }
     /* Per-image matte (passepartout) picker — bottom-right of each thumb */
     .sl-thumb-matte {
       position: absolute; right: 3px; bottom: 3px;
@@ -1751,6 +1821,115 @@
       const thick = _MATTE_THICK_MAP[type] || 5;
       return `box-shadow: inset 0 0 0 ${thick}px ${cssColor};`;
     }
+    // Modal-scale matte preview uses thicker borders so the effect is clearly visible.
+    function matteCssForModal(matteId) {
+      if (!matteId || matteId === 'none' || matteId === '__default__') return '';
+      const us = matteId.indexOf('_');
+      if (us < 0) return '';
+      const type = matteId.substring(0, us);
+      const color = matteId.substring(us + 1);
+      const cssColor = _MATTE_COLOR_MAP[color] || '#c8b294';
+      const thickMap = { shadowbox: 36, modern: 14, flexible: 24, panoramic: 26, triptych: 26, mix: 22, squares: 28 };
+      const thick = thickMap[type] || 22;
+      return `box-shadow: inset 0 0 0 ${thick}px ${cssColor};`;
+    }
+
+    // ── Large preview modal (opened on dblclick of any slideshow thumbnail) ───────
+    let _slModalEl = null;
+    function closeSlideshowModal() {
+      if (_slModalEl) {
+        _slModalEl.remove();
+        _slModalEl = null;
+      }
+      document.removeEventListener('keydown', _slModalEscHandler);
+    }
+    function _slModalEscHandler(e) {
+      if (e.key === 'Escape') closeSlideshowModal();
+    }
+    function openSlideshowModal(img) {
+      if (!img || !img.path) return;
+      closeSlideshowModal();
+      const fullUrl = `${location.origin}/app/frame_tv_art_collections/${encodeURIComponent(img.folder)}/${encodeURIComponent(img.file)}`;
+      const isSel = slideshowSelected.has(img.path);
+      const curMatte = slideshowMattes[img.path] || '';
+      const matteOptsHtml = matteOptionList().map(m => {
+        let label;
+        if (m === '__default__') label = 'use global default';
+        else if (m === 'none') label = 'none';
+        else label = m;
+        const val = (m === '__default__') ? '__default__' : m;
+        const sel = (val === curMatte || (!curMatte && m === 'none')) ? ' selected' : '';
+        return `<option value="${escapeHtml(val)}"${sel}>${escapeHtml(label)}</option>`;
+      }).join('');
+      const overlay = document.createElement('div');
+      overlay.className = 'sl-modal-overlay';
+      overlay.innerHTML = `
+        <div class="sl-modal-content" role="dialog" aria-label="Image preview">
+          <button class="sl-modal-close" type="button" title="Close (Esc)">&times;</button>
+          <div class="sl-modal-img-wrap">
+            <div class="sl-modal-img-frame">
+              <img src="${fullUrl}" alt="${escapeHtml(img.title || img.file)}" onerror="this.style.opacity='0.3'">
+              <div class="sl-modal-matte-preview" style="${matteCssForModal(curMatte)}"></div>
+            </div>
+          </div>
+          <div class="sl-modal-meta">
+            <strong>${escapeHtml(img.title || img.file)}</strong>${img.artist ? ' &middot; ' + escapeHtml(img.artist) : ''}${img.year ? ' &middot; ' + escapeHtml(String(img.year)) : ''}
+          </div>
+          <div class="sl-modal-controls">
+            <label for="sl-modal-matte">Matte:</label>
+            <select id="sl-modal-matte">${matteOptsHtml}</select>
+            <button type="button" class="sl-modal-toggle${isSel ? ' selected' : ''}">${isSel ? '\u2713 Selected' : 'Add to selection'}</button>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      _slModalEl = overlay;
+
+      // Click outside the content closes; click inside doesn't bubble out.
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) closeSlideshowModal();
+      });
+      overlay.querySelector('.sl-modal-close').addEventListener('click', closeSlideshowModal);
+      document.addEventListener('keydown', _slModalEscHandler);
+
+      // Matte change → publish, update local map, refresh modal preview AND grid.
+      const $matteSel = overlay.querySelector('#sl-modal-matte');
+      $matteSel.addEventListener('change', () => {
+        const val = $matteSel.value || '';
+        if (val === '__default__') delete slideshowMattes[img.path];
+        else slideshowMattes[img.path] = val;
+        publishMatte(img.path, val);
+        const $preview = overlay.querySelector('.sl-modal-matte-preview');
+        if ($preview) $preview.setAttribute('style', matteCssForModal(slideshowMattes[img.path] || ''));
+        renderSlideshowGrid();
+      });
+
+      // Toggle selection from the modal.
+      const $toggle = overlay.querySelector('.sl-modal-toggle');
+      $toggle.addEventListener('click', () => {
+        if (slideshowUploading) return;
+        if (slideshowPreviewMode) {
+          slideshowPreviewMode = false;
+          const $shuf = document.getElementById('sl-preview-shuffle');
+          if ($shuf) $shuf.textContent = 'Shuffle';
+        }
+        if (slideshowSelected.has(img.path)) {
+          slideshowSelected.delete(img.path);
+          $toggle.classList.remove('selected');
+          $toggle.textContent = 'Add to selection';
+        } else {
+          slideshowSelected.add(img.path);
+          $toggle.classList.add('selected');
+          $toggle.textContent = '\u2713 Selected';
+          const newCount = slideshowSelected.size;
+          if (newCount > 0) {
+            slideshowMaxUploads = newCount;
+            if ($slMaxUploads && !$slMaxUploads.dataset.dirty) $slMaxUploads.value = newCount;
+          }
+        }
+        updateSlCounter();
+        renderSlideshowGrid();
+      });
+    }
     function publishPresets(arr) {
       if (typeof client !== 'undefined' && client) {
         client.publish(TOPIC_CMD_PREFIX + '/slideshow/presets/set', JSON.stringify(arr), { qos: 1 });
@@ -1864,6 +2043,51 @@
     let slSeqBaseline = false;
     let slIntervalBaseline = 0;
     let slMaxUploadsBaseline = 10;
+
+    // ── In-progress autosave ──────────────────────────────────────────────────────────
+    // Persist the unapplied selection + max-uploads to localStorage so a browser refresh
+    // (or an MQTT reconnect that wipes retained state momentarily) doesn't lose work.
+    // Cleared once the user explicitly Applies or Clears.
+    const SL_INPROGRESS_KEY = 'sl-inprogress-v1';
+    let _slInProgressTimer = null;
+    function saveSlideshowInProgress() {
+      if (_slInProgressTimer) clearTimeout(_slInProgressTimer);
+      _slInProgressTimer = setTimeout(() => {
+        try {
+          const data = {
+            selected: [...slideshowSelected],
+            maxUploads: slideshowMaxUploads,
+            ts: Date.now()
+          };
+          localStorage.setItem(SL_INPROGRESS_KEY, JSON.stringify(data));
+        } catch(_) {}
+      }, 350);
+    }
+    function loadSlideshowInProgress() {
+      try {
+        const raw = localStorage.getItem(SL_INPROGRESS_KEY);
+        if (!raw) return false;
+        const data = JSON.parse(raw);
+        // Expire after 24h to avoid resurrecting stale work indefinitely.
+        if (data && data.ts && (Date.now() - data.ts) > 86400000) {
+          localStorage.removeItem(SL_INPROGRESS_KEY);
+          return false;
+        }
+        if (data && Array.isArray(data.selected) && data.selected.length) {
+          slideshowSelected = new Set(data.selected);
+        }
+        if (data && typeof data.maxUploads === 'number' && data.maxUploads > 0) {
+          slideshowMaxUploads = data.maxUploads;
+        }
+        return slideshowSelected.size > 0;
+      } catch(_) { return false; }
+    }
+    function clearSlideshowInProgress() {
+      try { localStorage.removeItem(SL_INPROGRESS_KEY); } catch(_) {}
+      if (_slInProgressTimer) { clearTimeout(_slInProgressTimer); _slInProgressTimer = null; }
+    }
+    // Restore early so the first TOPIC_SLIDESHOW_AVAIL doesn't reseed from stale baseline.
+    loadSlideshowInProgress();
 
     let slideshowUploading = false;
     let slideshowMode = 'auto';
@@ -2048,6 +2272,8 @@
         }
       }
       renderPresets();
+      // Autosave in-progress selection so a browser refresh doesn't lose work.
+      saveSlideshowInProgress();
     }
 
     function preloadThumbnails(images) {
@@ -2314,6 +2540,24 @@
         });
       });
 
+      // Double-click a thumbnail → open the large preview modal so the matte choice
+      // can be evaluated at near-full-screen size.
+      $slGrid.querySelectorAll('.sl-thumb').forEach(el => {
+        el.addEventListener('dblclick', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const path = el.dataset.path;
+          if (!path) return;
+          const img = (slideshowAvailable.find(i => i.path === path)) || (() => {
+            const ls = path.lastIndexOf('/');
+            const folder = ls > 0 ? path.substring(0, ls) : '';
+            const file = ls >= 0 ? path.substring(ls + 1) : path;
+            return { path, folder, file, title: '', artist: folder, year: '' };
+          })();
+          openSlideshowModal(img);
+        });
+      });
+
       // Drag-and-drop reordering for the Selected overview thumbs.
       // The order of slideshowSelected (a Set, insertion-ordered) is what gets
       // uploaded — important for sequential playback. We reorder by rebuilding
@@ -2420,6 +2664,9 @@
         }
         if (dirty && staged.length) payload.collections = staged;
         client.publish(`${TOPIC_CMD_PREFIX}/slideshow/override/set`, JSON.stringify(payload), { qos: 1 });
+        // Selection has now been committed — drop the in-progress autosave so a refresh
+        // doesn't re-flag this as "Modified" relative to the new baseline.
+        clearSlideshowInProgress();
         // Safety fallback only — MQTT response will cancel this and set state directly
         $slOApply._restoreTimer = setTimeout(() => {
           $slOApply._applying = false;
@@ -2439,6 +2686,8 @@
         if ($btn) $btn.textContent = 'Shuffle';
         const baseline = slideshowMode === 'override' ? slideshowOverridePaths : slideshowCurrentPaths;
         slideshowSelected = new Set(baseline);
+        // Reset wipes in-progress autosave too — selection now matches the baseline.
+        clearSlideshowInProgress();
         updateSlCounter();
         renderSlideshowGrid();
       };
