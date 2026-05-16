@@ -851,6 +851,51 @@ class FrameTVArtCard extends HTMLElement {
     return opts;
   }
 
+  // Hex approximations of the Samsung Frame matte palette. Unknown names fall
+  // back to gray and are logged once to the console (please report them).
+  static get _MATTE_COLOR_MAP() {
+    return {
+      // Whites / creams / tans
+      polar:    '#f5f5f0',
+      white:    '#f5f5f0',
+      ivory:    '#f0e8d0',
+      cotton:   '#ede4d3',
+      neutral:  '#d8d2c4',
+      sand:     '#d8c8a8',
+      antique:  '#c8b08a',
+      warm:     '#c8a878',
+      // Black / grays
+      black:    '#1c1c1c',
+      tinsel:   '#b8b8b8',
+      // Reds / oranges / pinks
+      apricot:  '#e08654',
+      coral:    '#e87a5c',
+      byzantine:'#a02828',
+      burgundy: '#6a1a2a',
+      flamingo: '#e89090',
+      dusty:    '#c08888',
+      // Greens
+      mint:     '#c8e8c8',
+      moss:     '#8aa07a',
+      // Blues
+      sky:      '#b0d0e8',
+      powder:   '#c8dceb',
+      // Purples
+      lavender: '#d0c8e8',
+    };
+  }
+  _matteColorHex(name) {
+    const map = this.constructor._MATTE_COLOR_MAP;
+    if (map[name]) return map[name];
+    if (!this.constructor._matteUnknownWarned) this.constructor._matteUnknownWarned = new Set();
+    const seen = this.constructor._matteUnknownWarned;
+    if (name && !seen.has(name)) {
+      seen.add(name);
+      console.warn(`[samsung-tv-art-card] Unknown matte color "${name}" — falling back to gray. Please report this name so we can add an accurate swatch.`);
+    }
+    return '#888888';
+  }
+
   _matteCssFor(matteId)      { return this._matteStyle(matteId, 'thumb'); }
   _matteCssForModal(matteId) { return this._matteStyle(matteId, 'modal'); }
 
@@ -862,12 +907,7 @@ class FrameTVArtCard extends HTMLElement {
     if (us < 0) return '';
     const type = matteId.substring(0, us);
     const color = matteId.substring(us + 1);
-    const colorMap = {
-      polar: '#f5f5f0', neutral: '#d8d2c4', apricot: '#e8c8a0', warm: '#c8a878',
-      cotton: '#ede4d3', sand: '#c8b294', mint: '#d4e8d4', moss: '#a8b89c',
-      lavender: '#d8d0e8', burgundy: '#7a2a3a', flamingo: '#e8a8a8', sky: '#b8d4e8'
-    };
-    const c = colorMap[color] || '#c8b294';
+    const c = this._matteColorHex(color);
     const isModal = scale === 'modal';
     const thickThumb = {
       shadowbox: 7, modern: 3, flexible: 5, panoramic: 6,

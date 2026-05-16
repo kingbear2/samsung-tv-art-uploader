@@ -1802,11 +1802,47 @@
       return opts;
     }
     // Visual hints for the on-thumbnail matte color preview.
+    // Hex approximations of the Samsung Frame matte palette. If you spot one
+    // that doesn't match what your TV shows, please open an issue with the
+    // exact color name (it'll be logged to the browser console on first use).
     const _MATTE_COLOR_MAP = {
-      polar: '#f5f5f0', neutral: '#d8d2c4', apricot: '#e8c8a0', warm: '#c8a878',
-      cotton: '#ede4d3', sand: '#c8b294', mint: '#d4e8d4', moss: '#a8b89c',
-      lavender: '#d8d0e8', burgundy: '#7a2a3a', flamingo: '#e8a8a8', sky: '#b8d4e8'
+      // Whites / creams / tans
+      polar:    '#f5f5f0',
+      white:    '#f5f5f0',
+      ivory:    '#f0e8d0',
+      cotton:   '#ede4d3',
+      neutral:  '#d8d2c4',
+      sand:     '#d8c8a8',
+      antique:  '#c8b08a',
+      warm:     '#c8a878',
+      // Black / grays
+      black:    '#1c1c1c',
+      tinsel:   '#b8b8b8',
+      // Reds / oranges / pinks
+      apricot:  '#e08654',
+      coral:    '#e87a5c',
+      byzantine:'#a02828',
+      burgundy: '#6a1a2a',
+      flamingo: '#e89090',
+      dusty:    '#c08888',
+      // Greens
+      mint:     '#c8e8c8',
+      moss:     '#8aa07a',
+      // Blues
+      sky:      '#b0d0e8',
+      powder:   '#c8dceb',
+      // Purples
+      lavender: '#d0c8e8',
     };
+    const _MATTE_UNKNOWN_WARNED = new Set();
+    function _matteColorHex(name) {
+      if (_MATTE_COLOR_MAP[name]) return _MATTE_COLOR_MAP[name];
+      if (name && !_MATTE_UNKNOWN_WARNED.has(name)) {
+        _MATTE_UNKNOWN_WARNED.add(name);
+        console.warn(`[samsung-tv-art] Unknown matte color "${name}" — falling back to gray. Please report this name so we can add an accurate swatch.`);
+      }
+      return '#888888';
+    }
     // Per-type base thickness (px) for the thumbnail-scale preview.
     const _MATTE_THICK_MAP = {
       shadowbox: 7, modern: 3, flexible: 5, panoramic: 6,
@@ -1825,7 +1861,7 @@
       if (us < 0) return '';
       const type = matteId.substring(0, us);
       const color = matteId.substring(us + 1);
-      const c = _MATTE_COLOR_MAP[color] || '#c8b294';
+      const c = _matteColorHex(color);
       const isModal = scale === 'modal';
       const T = (isModal ? _MATTE_THICK_MAP_MODAL : _MATTE_THICK_MAP)[type]
                 || (isModal ? 22 : 5);
