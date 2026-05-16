@@ -188,6 +188,12 @@
     .sl-thumb.selected { border-color: #2f7fbf; }
     .sl-thumb.disabled { opacity: 0.4; cursor: not-allowed; }
     .sl-thumb img { width: 100%; aspect-ratio: 16/9; object-fit: cover; display: block; }
+    /* Matte preview overlay: sits above the img but below the on-thumb controls */
+    .sl-thumb-matte-preview {
+      position: absolute; left: 0; right: 0; top: 0; bottom: 0;
+      pointer-events: none;
+      /* box-shadow set inline based on the chosen matte type/color */
+    }
     .sl-thumb-check {
       position: absolute; top: 4px; right: 4px;
       width: 22px; height: 22px; border-radius: 50%;
@@ -195,8 +201,10 @@
       display: flex; align-items: center; justify-content: center;
       font-size: 13px; font-weight: bold; color: #fff;
       transition: background 0.15s, border-color 0.15s;
+      cursor: pointer;
     }
     .sl-thumb.selected .sl-thumb-check { background: #2f7fbf; border-color: #2f7fbf; }
+    .sl-thumb.selected .sl-thumb-check:hover { background: #c84a4a; border-color: #c84a4a; }
     /* Selected-overview thumbs are draggable to control playback order */
     .sl-thumb.sl-draggable { cursor: grab; }
     .sl-thumb.sl-draggable:active { cursor: grabbing; }
@@ -213,12 +221,14 @@
       pointer-events: none;
     }
     .sl-thumb-matte {
-      position: absolute; bottom: 4px; right: 4px;
-      max-width: 75%;
-      font-size: 10px; line-height: 1; padding: 2px 4px;
-      background: rgba(0,0,0,0.7); color: #ddd;
+      position: absolute; bottom: 4px; left: 4px; right: 4px;
+      width: auto; max-width: none;
+      font-size: 11px; line-height: 1.1; padding: 3px 5px;
+      background: rgba(0,0,0,0.72); color: #ddd;
       border: 1px solid #555; border-radius: 4px;
       cursor: pointer;
+      text-align: center;
+      text-overflow: ellipsis;
     }
     .sl-thumb-matte.has-override { border-color: #6ab0f5; color: #6ab0f5; background: rgba(47,127,191,0.18); }
     /* Per-image matte (passepartout) picker — bottom-right of each thumb */
@@ -1704,8 +1714,8 @@
       }
     }
     function matteOptionList() {
-      // Build a flat option list of matte ids: 'none' + every type_color combo for non-'none' types.
-      const opts = ['__default__', 'none'];
+      // 'none' is first so the picker visibly defaults to "none" whenever no override is set.
+      const opts = ['none'];
       const types = (slideshowMatteTypes && slideshowMatteTypes.length) ? slideshowMatteTypes
         : ['shadowbox', 'modern', 'flexible', 'panoramic', 'triptych', 'mix', 'squares'];
       const colors = (slideshowMatteColors && slideshowMatteColors.length) ? slideshowMatteColors
@@ -1717,7 +1727,29 @@
           opts.push(`${t}_${c}`);
         }
       }
+      // Last: explicit "use global default" for users who do want env-level fallback.
+      opts.push('__default__');
       return opts;
+    }
+    // Visual hints for the on-thumbnail matte color preview.
+    const _MATTE_COLOR_MAP = {
+      polar: '#f5f5f0', neutral: '#d8d2c4', apricot: '#e8c8a0', warm: '#c8a878',
+      cotton: '#ede4d3', sand: '#c8b294', mint: '#d4e8d4', moss: '#a8b89c',
+      lavender: '#d8d0e8', burgundy: '#7a2a3a', flamingo: '#e8a8a8', sky: '#b8d4e8'
+    };
+    const _MATTE_THICK_MAP = {
+      shadowbox: 7, modern: 3, flexible: 5, panoramic: 5,
+      triptych: 5, mix: 5, squares: 5
+    };
+    function matteCssFor(matteId) {
+      if (!matteId || matteId === 'none' || matteId === '__default__') return '';
+      const us = matteId.indexOf('_');
+      if (us < 0) return '';
+      const type = matteId.substring(0, us);
+      const color = matteId.substring(us + 1);
+      const cssColor = _MATTE_COLOR_MAP[color] || '#c8b294';
+      const thick = _MATTE_THICK_MAP[type] || 5;
+      return `box-shadow: inset 0 0 0 ${thick}px ${cssColor};`;
     }
     function publishPresets(arr) {
       if (typeof client !== 'undefined' && client) {
@@ -2084,15 +2116,22 @@
         const curMatte = slideshowMattes[img.path] || '';
         const hasOverrideCls = curMatte ? ' has-override' : '';
         const matteOpts = matteOptionList().map(m => {
-          const label = (m === '__default__') ? 'matte: default' : (m === 'none' ? 'matte: none' : m);
-          const val = (m === '__default__') ? '' : m;
-          const sel = (val === curMatte) ? ' selected' : '';
+          let label;
+          if (m === '__default__') label = 'use global default';
+          else if (m === 'none') label = 'none';
+          else label = m;
+          const val = (m === '__default__') ? '__default__' : m;
+          // Visually preselect "none" when there is no override and the option is plain "none".
+          const sel = (val === curMatte || (!curMatte && m === 'none')) ? ' selected' : '';
           return `<option value="${escapeHtml(val)}"${sel}>${escapeHtml(label)}</option>`;
         }).join('');
         const matteHtml = `<select class="sl-thumb-matte${hasOverrideCls}" data-matte-for="${escapeHtml(img.path)}" title="Passepartout (matte) for this image">${matteOpts}</select>`;
+        const matteCss = matteCssFor(curMatte);
+        const matteOverlay = matteCss ? `<div class="sl-thumb-matte-preview" style="${matteCss}"></div>` : '';
         return `<div class="sl-thumb${isSel ? ' selected' : ''}${draggableCls}" data-path="${escapeHtml(img.path)}"${draggableAttr}>
           <img data-src="${thumbUrl}" alt="${escapeHtml(img.title || img.file)}" onerror="this.style.display='none'">
-          <div class="sl-thumb-check">${isSel ? '\u2713' : ''}</div>
+          ${matteOverlay}
+          <div class="sl-thumb-check" data-check-for="${escapeHtml(img.path)}" title="${isSel ? 'Click to deselect' : ''}">${isSel ? '\u2713' : ''}</div>
           ${ordHtml}
           ${matteHtml}
         </div>`;
@@ -2213,23 +2252,43 @@
         });
       });
 
-      // Thumb click: toggle selection
+      // Thumb click: select only (does NOT deselect — use the corner checkmark to remove).
       $slGrid.querySelectorAll('.sl-thumb').forEach(el => {
-        el.addEventListener('click', () => {
+        el.addEventListener('click', (e) => {
           if (slideshowUploading) return;
+          // Clicks on the checkmark or the matte select have their own handlers.
+          if (e.target && e.target.closest && (e.target.closest('.sl-thumb-check') || e.target.closest('.sl-thumb-matte'))) return;
           if (slideshowPreviewMode) {
             slideshowPreviewMode = false;
             const $shuf = document.getElementById('sl-preview-shuffle');
             if ($shuf) $shuf.textContent = 'Shuffle';
           }
           const path = el.dataset.path;
-          if (slideshowSelected.has(path)) { slideshowSelected.delete(path); }
-          else { slideshowSelected.add(path); }
+          if (slideshowSelected.has(path)) return; // single-click no longer deselects
+          slideshowSelected.add(path);
           const newCount = slideshowSelected.size;
           if (newCount > 0) {
             slideshowMaxUploads = newCount;
             if ($slMaxUploads && !$slMaxUploads.dataset.dirty) $slMaxUploads.value = newCount;
           }
+          updateSlCounter();
+          renderSlideshowGrid();
+        });
+      });
+
+      // Checkmark click: only deselects (when the thumb is selected).
+      $slGrid.querySelectorAll('.sl-thumb-check').forEach(el => {
+        el.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (slideshowUploading) return;
+          const path = el.dataset.checkFor;
+          if (!path || !slideshowSelected.has(path)) return;
+          if (slideshowPreviewMode) {
+            slideshowPreviewMode = false;
+            const $shuf = document.getElementById('sl-preview-shuffle');
+            if ($shuf) $shuf.textContent = 'Shuffle';
+          }
+          slideshowSelected.delete(path);
           updateSlCounter();
           renderSlideshowGrid();
         });
@@ -2244,9 +2303,14 @@
           const path = sel.dataset.matteFor;
           const val = sel.value || '';
           // Optimistic local update; broker retain will confirm.
-          if (val) slideshowMattes[path] = val;
-          else delete slideshowMattes[path];
+          if (val === '__default__') {
+            delete slideshowMattes[path];
+          } else {
+            slideshowMattes[path] = val;
+          }
           publishMatte(path, val);
+          // Re-render so the matte preview overlay updates immediately.
+          renderSlideshowGrid();
         });
       });
 

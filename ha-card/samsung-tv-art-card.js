@@ -813,8 +813,8 @@ class FrameTVArtCard extends HTMLElement {
   }
 
   _matteOptionList() {
-    // Build a flat list of matte ids: '__default__' + 'none' + every type_color combo.
-    const opts = ['__default__', 'none'];
+    // 'none' is first so the picker visibly defaults to "none" whenever no override is set.
+    const opts = ['none'];
     const types = (this._slideshowMatteTypes && this._slideshowMatteTypes.length)
       ? this._slideshowMatteTypes
       : ['shadowbox', 'modern', 'flexible', 'panoramic', 'triptych', 'mix', 'squares'];
@@ -828,7 +828,29 @@ class FrameTVArtCard extends HTMLElement {
         opts.push(`${t}_${c}`);
       }
     }
+    // Last: explicit "use global default" for users who do want env-level fallback.
+    opts.push('__default__');
     return opts;
+  }
+
+  _matteCssFor(matteId) {
+    if (!matteId || matteId === 'none' || matteId === '__default__') return '';
+    const us = matteId.indexOf('_');
+    if (us < 0) return '';
+    const type = matteId.substring(0, us);
+    const color = matteId.substring(us + 1);
+    const colorMap = {
+      polar: '#f5f5f0', neutral: '#d8d2c4', apricot: '#e8c8a0', warm: '#c8a878',
+      cotton: '#ede4d3', sand: '#c8b294', mint: '#d4e8d4', moss: '#a8b89c',
+      lavender: '#d8d0e8', burgundy: '#7a2a3a', flamingo: '#e8a8a8', sky: '#b8d4e8'
+    };
+    const thickMap = {
+      shadowbox: 7, modern: 3, flexible: 5, panoramic: 5,
+      triptych: 5, mix: 5, squares: 5
+    };
+    const cssColor = colorMap[color] || '#c8b294';
+    const thick = thickMap[type] || 5;
+    return `box-shadow: inset 0 0 0 ${thick}px ${cssColor};`;
   }
 
   _formatInline(text) {
@@ -1542,8 +1564,10 @@ class FrameTVArtCard extends HTMLElement {
             background: transparent;
             display: flex; align-items: center; justify-content: center;
             font-size: 10px; color: #fff;
+            cursor: pointer;
           }
           .ftv-op-thumb.selected .ftv-op-check { background: #2f7fbf; border-color: #2f7fbf; }
+          .ftv-op-thumb.selected .ftv-op-check:hover { background: #c84a4a; border-color: #c84a4a; }
           /* Selected-overview thumbs are draggable to control playback order */
           .ftv-op-thumb.ftv-draggable { cursor: grab; }
           .ftv-op-thumb.ftv-draggable:active { cursor: grabbing; }
@@ -1560,14 +1584,19 @@ class FrameTVArtCard extends HTMLElement {
             pointer-events: none;
           }
           .ftv-op-matte {
-            position: absolute; bottom: 3px; right: 3px;
-            max-width: 70%;
-            font-size: 9px; line-height: 1; padding: 2px 4px;
+            position: absolute; bottom: 3px; left: 3px; right: 3px;
+            width: auto; max-width: none;
+            font-size: 10px; line-height: 1.1; padding: 2px 4px;
             background: rgba(0,0,0,0.72); color: #ddd;
             border: 1px solid #555; border-radius: 4px;
-            cursor: pointer;
+            cursor: pointer; text-align: center;
           }
           .ftv-op-matte.has-override { border-color: #6ab0f5; color: #6ab0f5; background: rgba(47,127,191,0.18); }
+          /* Matte preview overlay: sits above the img but below the on-thumb controls */
+          .ftv-op-matte-preview {
+            position: absolute; left: 0; right: 0; top: 0; bottom: 0;
+            pointer-events: none;
+          }
           .ftv-op-hint { padding: 16px 14px; font-size: 0.85em; color: rgba(255,255,255,0.4); text-align: center; }
           .ftv-coll-row { margin-bottom: 0; }
           .ftv-coll-header {
@@ -2447,14 +2476,20 @@ class FrameTVArtCard extends HTMLElement {
       const ordHtml = (opts.ordinal != null) ? `<div class="ftv-op-ord">${opts.ordinal}</div>` : '';
       const curMatte = (this._slideshowMattes && this._slideshowMattes[img.path]) || '';
       const matteOpts = this._matteOptionList().map(m => {
-        const label = (m === '__default__') ? 'matte: default' : (m === 'none' ? 'matte: none' : m);
-        const val = (m === '__default__') ? '' : m;
-        const sel = (val === curMatte) ? ' selected' : '';
+        let label;
+        if (m === '__default__') label = 'use global default';
+        else if (m === 'none') label = 'none';
+        else label = m;
+        const val = (m === '__default__') ? '__default__' : m;
+        // Visually preselect "none" when there is no override and the option is plain 'none'.
+        const sel = (val === curMatte || (!curMatte && m === 'none')) ? ' selected' : '';
         return `<option value="${this._escapeHtml(val)}"${sel}>${this._escapeHtml(label)}</option>`;
       }).join('');
       const matteCls = curMatte ? ' has-override' : '';
       const matteHtml = `<select class="ftv-op-matte${matteCls}" data-matte-for="${this._escapeHtml(img.path)}" title="Passepartout (matte)">${matteOpts}</select>`;
-      return `<div class="ftv-op-thumb${isSel ? ' selected' : ''}${locked ? ' disabled' : ''}${draggableCls}" data-path="${this._escapeHtml(img.path)}"${draggableAttr}><img data-src="${url}" alt="" onerror="this.style.display='none'"><div class="ftv-op-check">${isSel ? '&#10003;' : ''}</div>${ordHtml}${matteHtml}</div>`;
+      const matteCss = this._matteCssFor(curMatte);
+      const matteOverlay = matteCss ? `<div class="ftv-op-matte-preview" style="${matteCss}"></div>` : '';
+      return `<div class="ftv-op-thumb${isSel ? ' selected' : ''}${locked ? ' disabled' : ''}${draggableCls}" data-path="${this._escapeHtml(img.path)}"${draggableAttr}><img data-src="${url}" alt="" onerror="this.style.display='none'">${matteOverlay}<div class="ftv-op-check" data-check-for="${this._escapeHtml(img.path)}">${isSel ? '&#10003;' : ''}</div>${ordHtml}${matteHtml}</div>`;
     };
 
     // Selected overview at top, in user-controlled order (insertion order of
@@ -2564,21 +2599,35 @@ class FrameTVArtCard extends HTMLElement {
     if (!locked) {
       grid.querySelectorAll('.ftv-op-thumb').forEach(el => {
         el.addEventListener('click', (e) => {
-          // Clicks on the matte select shouldn't toggle selection
-          if (e.target && e.target.classList && e.target.classList.contains('ftv-op-matte')) return;
+          // Clicks on the matte select or the checkmark have their own handlers.
+          if (e.target && e.target.closest && (e.target.closest('.ftv-op-matte') || e.target.closest('.ftv-op-check'))) return;
           if (el.classList.contains('disabled')) return;
           const path = el.dataset.path;
-          if (this._slideshowSelected.has(path)) {
-            this._slideshowSelected.delete(path);
-          } else {
-            this._slideshowSelected.add(path);
-          }
+          // Single click only ADDS to selection — use the corner checkmark to remove.
+          if (this._slideshowSelected.has(path)) return;
+          this._slideshowSelected.add(path);
           const newCount = this._slideshowSelected.size;
           if (newCount > 0) {
             this._slideshowMaxUploads = newCount;
             const opMaxEl = this.querySelector('#ftv-op-max');
             if (opMaxEl && !opMaxEl.dataset.dirty) opMaxEl.value = newCount;
           }
+          if (this._slideshowPreviewMode) {
+            this._slideshowPreviewMode = false;
+            const shufBtn = this.querySelector('#ftv-op-shuffle');
+            if (shufBtn) shufBtn.textContent = 'Shuffle';
+          }
+          this._renderOverrideGrid();
+        });
+      });
+
+      // Checkmark click: deselects the image (only when currently selected).
+      grid.querySelectorAll('.ftv-op-check').forEach(el => {
+        el.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const path = el.dataset.checkFor;
+          if (!path || !this._slideshowSelected.has(path)) return;
+          this._slideshowSelected.delete(path);
           if (this._slideshowPreviewMode) {
             this._slideshowPreviewMode = false;
             const shufBtn = this.querySelector('#ftv-op-shuffle');
@@ -2599,8 +2648,11 @@ class FrameTVArtCard extends HTMLElement {
         const path = sel.dataset.matteFor;
         const val = sel.value || '';
         if (!this._slideshowMattes) this._slideshowMattes = {};
-        if (val) this._slideshowMattes[path] = val;
-        else delete this._slideshowMattes[path];
+        if (val === '__default__') {
+          delete this._slideshowMattes[path];
+        } else {
+          this._slideshowMattes[path] = val;
+        }
         if (this._hass) {
           this._hass.callService('mqtt', 'publish', {
             topic: 'frame_tv/cmd/slideshow/matte/set',
@@ -2608,6 +2660,8 @@ class FrameTVArtCard extends HTMLElement {
             qos: 1
           });
         }
+        // Re-render so the matte preview overlay updates immediately.
+        this._renderOverrideGrid();
       });
     });
 
