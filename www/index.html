@@ -1856,6 +1856,7 @@
       redorange:'#d44a26',
       byzantine:'#9a1a26',
       burgundy: '#5a1020',
+      burgandy: '#5a1020',  // Samsung's API misspelling of 'burgundy'
       flamingo: '#e88a98',
       dusty:    '#b97a86',
       // Greens.
@@ -2064,16 +2065,6 @@
       // Matte change → publish, update local map, refresh modal preview AND grid.
       // Always operates on the CURRENTLY DISPLAYED image (idx may have advanced).
       const $matteSel = overlay.querySelector('#sl-modal-matte');
-      // Workaround: in some Chromium builds the native <select> popup doesn't
-      // open on plain mouseclick when the select sits inside a fixed-position
-      // overlay (keyboard / tab still works). Explicitly invoke showPicker() so
-      // a click reliably opens the dropdown.
-      $matteSel.addEventListener('mousedown', (e) => {
-        if (typeof $matteSel.showPicker === 'function') {
-          e.preventDefault();
-          try { $matteSel.focus(); $matteSel.showPicker(); } catch (_) { /* unsupported — fall back to default */ }
-        }
-      });
       $matteSel.addEventListener('change', () => {
         const cur = _slModalList[_slModalIdx];
         if (!cur) return;
