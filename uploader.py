@@ -2915,7 +2915,7 @@ class monitor_and_display:
         except Exception as e:
             self.log.warning('Failed to publish selected collections state: %s', e)
 
-    def _publish_ack(self, cmd, status='ok', message='', req_id=None):
+    def _publish_ack(self, cmd, status='ok', message='', req_id=None, extra=None):
         if not self.mqtt_enabled or not self._mqtt:
             return
         try:
@@ -2924,6 +2924,10 @@ class monitor_and_display:
                 ack["message"] = message
             if req_id is not None:
                 ack["req_id"] = req_id
+            if isinstance(extra, dict):
+                for k, v in extra.items():
+                    if k not in ack:
+                        ack[k] = v
             ack["selected_collections"] = self.selected_collections
             self._mqtt.publish(f"{self.mqtt_ack_prefix}/{cmd}", json.dumps(ack, separators=(",", ":")), qos=0, retain=False)
         except Exception:
@@ -3277,13 +3281,26 @@ class monitor_and_display:
                             content_id = v.get('content_id')
                             break
                     if content_id:
+                        # Capture the pre-change state so we can revert if the TV rejects the combo.
+                        had_override = path in self._matte_overrides
+                        prev_override = self._matte_overrides.get(path)
                         async def _apply():
                             try:
                                 await self.tv.change_matte(content_id, effective, portrait_matte=effective)
+                                self._publish_ack('slideshow/matte/set', 'ok', f'Matte set to {effective}', req_id, extra={'path': path, 'matte': effective})
                             except Exception as ex:
                                 self.log.warning('change_matte failed for %s: %s', path, ex)
+                                # Revert persisted override so the staged state matches reality.
+                                if had_override:
+                                    self._matte_overrides[path] = prev_override
+                                else:
+                                    self._matte_overrides.pop(path, None)
+                                self._save_matte_overrides()
+                                self._publish_matte_overrides()
+                                self._publish_ack('slideshow/matte/set', 'error', f'TV rejected matte "{effective}" ({ex})', req_id, extra={'path': path, 'matte': effective})
                         self._schedule_command_coro(_apply(), 'slideshow/matte/set')
-                    self._publish_ack('slideshow/matte/set', 'ok', f'Matte set to {effective}', req_id)
+                    else:
+                        self._publish_ack('slideshow/matte/set', 'ok', f'Matte set to {effective}', req_id, extra={'path': path, 'matte': effective})
                 except Exception as e:
                     self._publish_ack('slideshow/matte/set', 'error', str(e), req_id)
                 return

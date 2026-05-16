@@ -823,8 +823,6 @@
             try {
               const m = JSON.parse(payload.toString() || '{}');
               slideshowMattes = (m && typeof m === 'object') ? m : {};
-              // Snapshot baseline so user-staged edits can be diffed against server truth.
-              slideshowMattesBaseline = { ...slideshowMattes };
               renderSlideshowGrid();
             } catch(_) {}
           }
@@ -927,6 +925,16 @@
               if (cmd === 'slideshow/override/clear') {
                 const $m = document.getElementById('sl-msg');
                 if ($m) { $m.textContent = status === 'ok' ? 'Override cleared. Auto mode restored.' : `Error: ${ack.message||'unknown'}`; setTimeout(()=>{ if($m) $m.textContent=''; },5000); }
+              }
+              if (cmd === 'slideshow/matte/set') {
+                const $m = document.getElementById('sl-msg');
+                if ($m && status === 'error') {
+                  const fname = ack.path ? ack.path.split('/').pop() : '';
+                  const mlabel = ack.matte || '';
+                  $m.textContent = `Matte rejected by TV: ${mlabel}${fname ? ' on ' + fname : ''}. Try a different color/style combo.`;
+                  $m.style.color = '#e08080';
+                  setTimeout(()=>{ if($m){ $m.textContent=''; $m.style.color=''; } }, 8000);
+                }
               }
               if (cmd === 'slideshow/preview/request') {
                 slideshowShuffling = false;
@@ -1784,8 +1792,7 @@
     const SL_PRESETS_KEY = 'sl-presets'; // kept for migration only
     let slideshowPresets = [];
     // ── Per-image matte (passepartout) overrides ──────────────────────────────────────
-    let slideshowMattes = {};                // { path_rel: matte_id } — working/staged state
-    let slideshowMattesBaseline = {};        // last server-confirmed state (compared to detect dirty)
+    let slideshowMattes = {};                // { path_rel: matte_id }
     let slideshowMatteTypes = [];            // available matte type names from TV
     let slideshowMatteColors = [];           // available matte color names from TV
     let _matteOptionsRequested = false;
@@ -2071,14 +2078,12 @@
         const cur = _slModalList[_slModalIdx];
         if (!cur) return;
         const val = $matteSel.value || '';
-        // Stage locally; the actual publish happens when the user clicks Apply.
-        // (Reset reverts to slideshowMattesBaseline.)
-        if (val === '__default__' || val === '' || val === 'none') delete slideshowMattes[cur.path];
+        if (val === '__default__') delete slideshowMattes[cur.path];
         else slideshowMattes[cur.path] = val;
+        publishMatte(cur.path, val);
         const $preview = overlay.querySelector('.sl-modal-matte-preview');
         if ($preview) $preview.setAttribute('style', matteCssForModal(slideshowMattes[cur.path] || ''));
         renderSlideshowGrid();
-        updateSlCounter();
       });
 
       // Toggle selection from the modal — operates on currently displayed image.
@@ -2427,17 +2432,6 @@
       $slApply.style.opacity = canApply ? 1 : 0.6;
     }
 
-    function mattesMatchBaseline() {
-      // Compare working slideshowMattes vs last server-confirmed baseline. Treat
-      // missing/empty as equal so toggling to 'none' and back doesn't dirty Apply.
-      const norm = (v) => (v === undefined || v === null || v === '' || v === '__default__') ? '' : v;
-      const keys = new Set([...Object.keys(slideshowMattes), ...Object.keys(slideshowMattesBaseline)]);
-      for (const k of keys) {
-        if (norm(slideshowMattes[k]) !== norm(slideshowMattesBaseline[k])) return false;
-      }
-      return true;
-    }
-
     function selectionMatchesBaseline() {
       // After clearing override: empty grid is the correct post-clear state — treat as in-sync.
       if (slideshowPostClear) return true;
@@ -2461,7 +2455,7 @@
     function updateSlCounter() {
       const count = slideshowSelected.size;
       if ($slSavePreset) $slSavePreset.disabled = count === 0;
-      const differs = !selectionMatchesBaseline() || !mattesMatchBaseline();
+      const differs = !selectionMatchesBaseline();
       if ($slOApply) {
         const canApply = count > 0 && !slideshowUploading && differs;
         $slOApply.disabled = !canApply;
@@ -2853,16 +2847,6 @@
       $slOApply.onclick = () => {
         if (!client || !slideshowSelected.size) return;
         const paths = Array.from(slideshowSelected);
-        // Publish any staged matte changes first so the override apply reflects them.
-        const norm = (v) => (v === undefined || v === null || v === '' || v === '__default__') ? '' : v;
-        const matteKeys = new Set([...Object.keys(slideshowMattes), ...Object.keys(slideshowMattesBaseline)]);
-        for (const k of matteKeys) {
-          if (norm(slideshowMattes[k]) !== norm(slideshowMattesBaseline[k])) {
-            publishMatte(k, slideshowMattes[k] || '__default__');
-          }
-        }
-        // Optimistic baseline update; server will republish authoritative state shortly.
-        slideshowMattesBaseline = { ...slideshowMattes };
         $slOApply.disabled = true;
         $slOApply._applying = true;
         $slOApply.textContent = 'Applying…';
@@ -2902,8 +2886,6 @@
         if ($btn) $btn.textContent = 'Shuffle';
         const baseline = slideshowMode === 'override' ? slideshowOverridePaths : slideshowCurrentPaths;
         slideshowSelected = new Set(baseline);
-        // Revert any staged matte edits back to the server-confirmed snapshot.
-        slideshowMattes = { ...slideshowMattesBaseline };
         // Reset wipes in-progress autosave too — selection now matches the baseline.
         clearSlideshowInProgress();
         updateSlCounter();
