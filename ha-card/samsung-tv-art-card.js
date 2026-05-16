@@ -851,7 +851,12 @@ class FrameTVArtCard extends HTMLElement {
     return opts;
   }
 
-  _matteCssFor(matteId) {
+  _matteCssFor(matteId)      { return this._matteStyle(matteId, 'thumb'); }
+  _matteCssForModal(matteId) { return this._matteStyle(matteId, 'modal'); }
+
+  // Build a per-type CSS style string that visually approximates each Samsung
+  // matte style (not just a flat colored border). `scale` is 'thumb' or 'modal'.
+  _matteStyle(matteId, scale) {
     if (!matteId || matteId === 'none' || matteId === '__default__') return '';
     const us = matteId.indexOf('_');
     if (us < 0) return '';
@@ -862,35 +867,56 @@ class FrameTVArtCard extends HTMLElement {
       cotton: '#ede4d3', sand: '#c8b294', mint: '#d4e8d4', moss: '#a8b89c',
       lavender: '#d8d0e8', burgundy: '#7a2a3a', flamingo: '#e8a8a8', sky: '#b8d4e8'
     };
-    const thickMap = {
-      shadowbox: 7, modern: 3, flexible: 5, panoramic: 5,
+    const c = colorMap[color] || '#c8b294';
+    const isModal = scale === 'modal';
+    const thickThumb = {
+      shadowbox: 7, modern: 3, flexible: 5, panoramic: 6,
       triptych: 5, mix: 5, squares: 5
     };
-    const cssColor = colorMap[color] || '#c8b294';
-    const thick = thickMap[type] || 5;
-    return `box-shadow: inset 0 0 0 ${thick}px ${cssColor};`;
-  }
-
-  // Modal-scale matte preview uses thicker borders so the effect is clearly
-  // visible on the larger image inside the dblclick preview modal.
-  _matteCssForModal(matteId) {
-    if (!matteId || matteId === 'none' || matteId === '__default__') return '';
-    const us = matteId.indexOf('_');
-    if (us < 0) return '';
-    const type = matteId.substring(0, us);
-    const color = matteId.substring(us + 1);
-    const colorMap = {
-      polar: '#f5f5f0', neutral: '#d8d2c4', apricot: '#e8c8a0', warm: '#c8a878',
-      cotton: '#ede4d3', sand: '#c8b294', mint: '#d4e8d4', moss: '#a8b89c',
-      lavender: '#d8d0e8', burgundy: '#7a2a3a', flamingo: '#e8a8a8', sky: '#b8d4e8'
+    const thickModal = {
+      shadowbox: 36, modern: 10, flexible: 22, panoramic: 30,
+      triptych: 22, mix: 24, squares: 24
     };
-    const thickMap = {
-      shadowbox: 36, modern: 14, flexible: 24, panoramic: 26,
-      triptych: 26, mix: 22, squares: 28
-    };
-    const cssColor = colorMap[color] || '#c8b294';
-    const thick = thickMap[type] || 22;
-    return `box-shadow: inset 0 0 0 ${thick}px ${cssColor};`;
+    const T = (isModal ? thickModal : thickThumb)[type] || (isModal ? 22 : 5);
+    switch (type) {
+      case 'shadowbox': {
+        // Frame + inner shadow at the inner edge to evoke a recessed mount.
+        const blur = isModal ? 14 : 4;
+        return `box-shadow: inset 0 0 0 ${T}px ${c}, inset 0 0 ${blur}px ${T}px rgba(0,0,0,0.55);`;
+      }
+      case 'panoramic': {
+        // Thick top/bottom bands, thin side rails (landscape orientation).
+        const big = Math.round(T * 1.6);
+        const small = Math.max(2, Math.round(T * 0.35));
+        return `box-shadow: inset 0 ${big}px 0 0 ${c}, inset 0 -${big}px 0 0 ${c}, inset ${small}px 0 0 0 ${c}, inset -${small}px 0 0 0 ${c};`;
+      }
+      case 'triptych': {
+        // Full border + two vertical dividers via linear-gradient bands.
+        const half = Math.max(1, Math.round(T * 0.35));
+        return `box-shadow: inset 0 0 0 ${T}px ${c}; background: linear-gradient(to right,`
+             + ` transparent calc(33.333% - ${half}px), ${c} calc(33.333% - ${half}px),`
+             + ` ${c} calc(33.333% + ${half}px), transparent calc(33.333% + ${half}px),`
+             + ` transparent calc(66.666% - ${half}px), ${c} calc(66.666% - ${half}px),`
+             + ` ${c} calc(66.666% + ${half}px), transparent calc(66.666% + ${half}px));`;
+      }
+      case 'mix': {
+        // Asymmetric: wider left rail, normal others.
+        const big = Math.round(T * 1.8);
+        return `box-shadow: inset ${big}px 0 0 0 ${c}, inset -${T}px 0 0 0 ${c}, inset 0 ${T}px 0 0 ${c}, inset 0 -${T}px 0 0 ${c};`;
+      }
+      case 'squares': {
+        // Full border + crosshair (one vertical + one horizontal divider).
+        const half = Math.max(1, Math.round(T * 0.3));
+        return `box-shadow: inset 0 0 0 ${T}px ${c}; background:`
+             + ` linear-gradient(to right, transparent calc(50% - ${half}px), ${c} calc(50% - ${half}px), ${c} calc(50% + ${half}px), transparent calc(50% + ${half}px)),`
+             + ` linear-gradient(to bottom, transparent calc(50% - ${half}px), ${c} calc(50% - ${half}px), ${c} calc(50% + ${half}px), transparent calc(50% + ${half}px));`;
+      }
+      case 'modern':
+      case 'flexible':
+      default:
+        // Plain flat matte — thickness encodes the type (modern thinnest).
+        return `box-shadow: inset 0 0 0 ${T}px ${c};`;
+    }
   }
 
   // ── In-progress autosave (mirror of web UI) ────────────────────────────────
