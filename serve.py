@@ -206,12 +206,26 @@ class FallbackHandler(SimpleHTTPRequestHandler):
             return self._json(200, self._read_ui_mqtt())
         if self.path.startswith('/api/collections-list'):
             return self._handle_api_get_collections_list()
+        if self.path.startswith('/api/matte_blocklist'):
+            return self._handle_api_get_matte_blocklist()
         if self.path in ('/favicon.png', '/favicon.ico'):
             return self._serve_favicon()
         return super().do_GET()
 
-    def _serve_favicon(self):
-        favicon_path = '/app/www/favicon.png'
+    def _handle_api_get_matte_blocklist(self):
+        """Return the matte blocklist JSON written by scripts/probe_mattes.py.
+        Returns an empty stub if probing has never been run."""
+        path = '/data/matte_blocklist.json'
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.loads(f.read() or '{}')
+        except FileNotFoundError:
+            data = {'bad_combos': [], 'probed_at': None}
+        except Exception as e:
+            return self._json(500, {'error': str(e)})
+        return self._json(200, data)
+
+    def _serve_favicon(self):        favicon_path = '/app/www/favicon.png'
         try:
             with open(favicon_path, 'rb') as f:
                 data = f.read()

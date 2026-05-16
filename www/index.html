@@ -745,6 +745,8 @@
         scheduleAvailableRetry();
         // Ask the backend to fetch the TV's available matte types/colors and publish them retained.
         requestMatteOptions();
+        // Load any per-combo matte blocklist produced by scripts/probe_mattes.py
+        loadMatteBlocklist();
         // Retained messages arrive as a burst after subscribe. Defer sync so the
         // trigger text reflects the fully-settled state after all messages land.
         setTimeout(() => { syncTriggerText(); updateButtons(); }, 600);
@@ -1817,19 +1819,44 @@
     const _MATTE_TYPES_EXCLUDED = new Set(['triptych', 'mix', 'squares', 'panoramic']);
     // Excluded colors: 'warm' and 'sage' are consistently rejected by the TV (error -7).
     const _MATTE_COLORS_EXCLUDED = new Set(['warm', 'sage']);
+    // Per-combo blocklist populated from scripts/probe_mattes.py (served at
+    // /api/matte_blocklist). When `probed=true`, this is authoritative and
+    // the blanket type/color excludes above are ignored — the probe captured
+    // exactly what THIS TV accepts. When false (never probed), we fall back
+    // to the conservative blanket excludes.
+    const slideshowMatteBlocklist = { probed: false, badCombos: new Set() };
+    function _comboKey(t, c) { return c ? `${t}_${c}` : t; }
+    async function loadMatteBlocklist() {
+      try {
+        const r = await fetch('/api/matte_blocklist', { cache: 'no-store' });
+        if (!r.ok) return;
+        const d = await r.json();
+        slideshowMatteBlocklist.probed = !!d.probed_at;
+        slideshowMatteBlocklist.badCombos = new Set(
+          (d.bad_combos || []).map(([t, c]) => _comboKey(t, c))
+        );
+      } catch (e) { /* leave defaults */ }
+    }
     function matteOptionList() {
       // 'none' is first so the picker visibly defaults to "none" whenever no override is set.
       const opts = ['none'];
+      const probed = slideshowMatteBlocklist.probed;
+      const bad = slideshowMatteBlocklist.badCombos;
       const rawTypes = (slideshowMatteTypes && slideshowMatteTypes.length) ? slideshowMatteTypes
         : ['shadowbox', 'modern', 'flexible'];
-      const types = rawTypes.filter(t => t && !_MATTE_TYPES_EXCLUDED.has(t));
+      // Honor blanket exclusions only when no probe has been run; otherwise the
+      // probe is the source of truth.
+      const types = probed ? rawTypes.filter(Boolean)
+                           : rawTypes.filter(t => t && !_MATTE_TYPES_EXCLUDED.has(t));
       const rawColors = (slideshowMatteColors && slideshowMatteColors.length) ? slideshowMatteColors
         : ['polar', 'neutral', 'apricot'];
-      const colors = rawColors.filter(c => c && !_MATTE_COLORS_EXCLUDED.has(c));
+      const colors = probed ? rawColors.filter(Boolean)
+                            : rawColors.filter(c => c && !_MATTE_COLORS_EXCLUDED.has(c));
       for (const t of types) {
         if (!t || t === 'none') continue;
         for (const c of colors) {
           if (!c) continue;
+          if (bad.has(_comboKey(t, c))) continue;  // probed bad
           opts.push(`${t}_${c}`);
         }
       }
