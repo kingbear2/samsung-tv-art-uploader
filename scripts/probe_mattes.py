@@ -125,13 +125,15 @@ async def probe(args):
 
     # Track per-combo rejection counts across all probed images.
     # A combo is "bad" only when EVERY image rejected it with -7.
+    # NOTE: 'none' is intentionally NOT probed — it's the UI's reset/clear path
+    # and the TV often NACKs a redundant 'none' set with -7 when the image
+    # already has no matte. We must never blocklist it.
     combos = []  # list of (type, color_or_None, combo_string)
     for t in types:
         if t == 'none':
-            combos.append(('none', None, 'none'))
-        else:
-            for c in colors:
-                combos.append((t, c, f'{t}_{c}'))
+            continue
+        for c in colors:
+            combos.append((t, c, f'{t}_{c}'))
 
     reject_counts = {combo: 0 for _, _, combo in combos}
     other_errors = {combo: None for _, _, combo in combos}
