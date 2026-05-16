@@ -1820,7 +1820,16 @@
     // image/orientation specific, not categorical. Trust the TV's own
     // get_matte_list for the universe of options and the probe blocklist for
     // which combinations to hide.
-    const slideshowMatteBlocklist = { probed: false, badCombos: new Set() };
+    //
+    // The server stamps the response with `stale: true` when the TV's current
+    // model+firmware no longer match what was captured at probe time (Tizen
+    // updates can change which combos the TV accepts). In that case we ignore
+    // badCombos entirely so the user isn't hiding combos based on outdated
+    // probe data — they'll see everything and can re-run the probe.
+    const slideshowMatteBlocklist = {
+      probed: false, stale: false, badCombos: new Set(),
+      probedTvDevice: null, currentTvDevice: null,
+    };
     function _comboKey(t, c) { return c ? `${t}_${c}` : t; }
     async function loadMatteBlocklist() {
       try {
@@ -1828,9 +1837,18 @@
         if (!r.ok) return;
         const d = await r.json();
         slideshowMatteBlocklist.probed = !!d.probed_at;
-        slideshowMatteBlocklist.badCombos = new Set(
-          (d.bad_combos || []).map(([t, c]) => _comboKey(t, c))
-        );
+        slideshowMatteBlocklist.stale  = !!d.stale;
+        slideshowMatteBlocklist.probedTvDevice  = d.tv_device || null;
+        slideshowMatteBlocklist.currentTvDevice = d.current_tv_device || null;
+        // When stale, server already cleared bad_combos; double-guard here anyway.
+        slideshowMatteBlocklist.badCombos = d.stale
+          ? new Set()
+          : new Set((d.bad_combos || []).map(([t, c]) => _comboKey(t, c)));
+        if (d.stale) {
+          const p = d.tv_device || {}, c = d.current_tv_device || {};
+          console.warn('[matte-blocklist] stale — TV identity changed since probe.',
+            { probed: p, current: c, hint: 'Re-run scripts/probe_mattes.py to regenerate.' });
+        }
       } catch (e) { /* leave defaults */ }
     }
     function matteOptionList() {

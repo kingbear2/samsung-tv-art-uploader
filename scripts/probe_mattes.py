@@ -35,6 +35,7 @@ import json
 import os
 import socket
 import sys
+import urllib.request
 from datetime import datetime, timezone
 
 # Allow running from anywhere — script lives in scripts/, uploader.py at repo root
@@ -46,6 +47,40 @@ from samsungtvws.async_art import SamsungTVAsyncArt  # noqa: E402
 def _is_error_minus_7(exc):
     msg = str(exc)
     return 'error number -7' in msg or "'-7'" in msg or 'errno -7' in msg
+
+
+def _fetch_device_info(ip, timeout=3.0):
+    """Hit the TV's unauthenticated REST endpoint and extract a stable
+    identity fingerprint. Returned dict is used to invalidate the matte
+    blocklist when the TV model or firmware changes — different firmwares
+    accept different (matte_type, color) combos, and the same physical TV
+    can change which combos it rejects after a Tizen update.
+
+    Returns {} on any failure (network, JSON, missing keys) — callers should
+    treat that as 'unknown identity' and proceed without fingerprinting.
+    """
+    if not ip:
+        return {}
+    url = f'http://{ip}:8001/api/v2/'
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            raw = json.loads(r.read().decode('utf-8') or '{}')
+    except Exception:
+        return {}
+    dev = raw.get('device') if isinstance(raw, dict) else None
+    if not isinstance(dev, dict):
+        return {}
+    # Keys vary by firmware; capture everything we plausibly care about.
+    # `model` + `firmware_version` are the invalidation drivers; the rest is
+    # diagnostic context surfaced through the UI.
+    return {
+        'model':            dev.get('modelName') or dev.get('model') or '',
+        'firmware_version': dev.get('firmwareVersion') or dev.get('version') or '',
+        'os':               dev.get('OS') or '',
+        'name':             dev.get('name') or '',
+        'wifi_mac':         dev.get('wifiMac') or '',
+        'type':             dev.get('type') or '',
+    }
 
 
 async def _list_mattes(tv):
@@ -82,6 +117,14 @@ async def probe(args):
         sys.exit(2)
 
     device_name = os.environ.get('SAMSUNG_TV_ART_DEVICE_NAME') or socket.gethostname() or 'MatteProbe'
+    tv_device = _fetch_device_info(args.ip)
+    if tv_device:
+        print(f"TV identity: model={tv_device.get('model','?')} "
+              f"firmware={tv_device.get('firmware_version','?')} "
+              f"name={tv_device.get('name','?')}")
+    else:
+        print('WARN: could not fetch TV /api/v2/ device info; blocklist will not auto-invalidate on firmware change',
+              file=sys.stderr)
     tv = SamsungTVAsyncArt(host=args.ip, port=args.port, token_file=token_file, name=device_name)
     await tv.start_listening()
 
@@ -172,6 +215,7 @@ async def probe(args):
 
     out = {
         'probed_at':   datetime.now(timezone.utc).isoformat(timespec='seconds'),
+        'tv_device':   tv_device,
         'content_ids': content_ids,
         'tv_types':    types,
         'tv_colors':   colors,

@@ -2,13 +2,50 @@
 import os
 import sys
 import json
+import time
 import signal
 import functools
+import urllib.request
 from urllib.parse import urlparse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 INDEX_PATH = "/app/www/index.html"
 ROOT_DIR = "/"
+
+# Cache the TV's /api/v2/ device-info response so back-to-back blocklist
+# requests don't each pay a network round-trip. Refreshed at most every
+# _TV_DEVICE_TTL seconds. Captures (model, firmware_version) used to detect
+# when a Tizen update has changed which matte combos the TV accepts.
+_TV_DEVICE_TTL = 300  # seconds
+_tv_device_cache = {'at': 0.0, 'data': {}}
+
+
+def _get_cached_tv_device_info():
+    now = time.time()
+    if now - _tv_device_cache['at'] < _TV_DEVICE_TTL and _tv_device_cache['data']:
+        return _tv_device_cache['data']
+    ip = os.environ.get('SAMSUNG_TV_ART_TV_IP', '').strip()
+    info = {}
+    if ip:
+        try:
+            with urllib.request.urlopen(f'http://{ip}:8001/api/v2/', timeout=2.0) as r:
+                raw = json.loads(r.read().decode('utf-8') or '{}')
+            dev = raw.get('device') if isinstance(raw, dict) else None
+            if isinstance(dev, dict):
+                info = {
+                    'model':            dev.get('modelName') or dev.get('model') or '',
+                    'firmware_version': dev.get('firmwareVersion') or dev.get('version') or '',
+                    'os':               dev.get('OS') or '',
+                    'name':             dev.get('name') or '',
+                    'wifi_mac':         dev.get('wifiMac') or '',
+                    'type':             dev.get('type') or '',
+                }
+        except Exception:
+            info = {}
+    _tv_device_cache['at'] = now
+    _tv_device_cache['data'] = info
+    return info
+
 
 class FallbackHandler(SimpleHTTPRequestHandler):
     # directory is passed via functools.partial
@@ -214,7 +251,14 @@ class FallbackHandler(SimpleHTTPRequestHandler):
 
     def _handle_api_get_matte_blocklist(self):
         """Return the matte blocklist JSON written by scripts/probe_mattes.py.
-        Returns an empty stub if probing has never been run."""
+        Returns an empty stub if probing has never been run.
+
+        Also fetches the TV's current identity (model + firmware) from its
+        unauthenticated REST endpoint and compares it to what was captured
+        at probe time. If they differ, the blocklist is marked `stale: true`
+        and `bad_combos` is cleared server-side so the UI doesn't hide combos
+        based on a previous firmware's behavior. The probed/current device
+        info is always returned for diagnostics."""
         path = '/data/matte_blocklist.json'
         try:
             with open(path, 'r', encoding='utf-8') as f:
@@ -223,6 +267,21 @@ class FallbackHandler(SimpleHTTPRequestHandler):
             data = {'bad_combos': [], 'probed_at': None}
         except Exception as e:
             return self._json(500, {'error': str(e)})
+        current = _get_cached_tv_device_info()
+        probed = data.get('tv_device') if isinstance(data.get('tv_device'), dict) else {}
+        # Only fingerprint-compare when both sides have the keys; if either is
+        # missing (old blocklist, TV unreachable) treat as not-stale so we
+        # don't gratuitously throw away a valid blocklist.
+        stale = False
+        if probed and current:
+            for k in ('model', 'firmware_version'):
+                if probed.get(k) and current.get(k) and probed[k] != current[k]:
+                    stale = True
+                    break
+        data['current_tv_device'] = current
+        data['stale'] = stale
+        if stale:
+            data['bad_combos'] = []
         return self._json(200, data)
 
     def _serve_favicon(self):
