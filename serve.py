@@ -225,7 +225,8 @@ class FallbackHandler(SimpleHTTPRequestHandler):
             return self._json(500, {'error': str(e)})
         return self._json(200, data)
 
-    def _serve_favicon(self):        favicon_path = '/app/www/favicon.png'
+    def _serve_favicon(self):
+        favicon_path = '/app/www/favicon.png'
         try:
             with open(favicon_path, 'rb') as f:
                 data = f.read()
