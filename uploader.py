@@ -373,6 +373,8 @@ class monitor_and_display:
         self.mqtt_slideshow_attr_topic = os.environ.get('SAMSUNG_TV_ART_MQTT_SLIDESHOW_ATTR', 'frame_tv/slideshow/attributes')
         self.mqtt_slideshow_available_topic = os.environ.get('SAMSUNG_TV_ART_MQTT_SLIDESHOW_AVAILABLE', 'frame_tv/slideshow/available')
         self.mqtt_slideshow_presets_topic = os.environ.get('SAMSUNG_TV_ART_MQTT_SLIDESHOW_PRESETS', 'frame_tv/slideshow/presets')
+        self.slideshow_presets_path = '/data/slideshow_presets.json'
+        self._slideshow_presets = []  # in-memory cache, source of truth for republish
         self.ha_rest_enabled = False  # REST disabled in MQTT-only build
         self._mqtt = None
         self._presets_from_broker = False   # True once retained presets msg received
@@ -548,6 +550,7 @@ class monitor_and_display:
             self._load_csv_metadata()
         # Load persisted slideshow override before MQTT so state is ready when topics publish
         self._load_slideshow_override()
+        self._load_slideshow_presets()
         # Init MQTT if enabled
         if self.mqtt_enabled:
             self._init_mqtt()
@@ -2008,6 +2011,7 @@ class monitor_and_display:
         try:
             defaults = self._generate_default_presets()
             if defaults:
+                self._save_slideshow_presets(defaults)
                 self._mqtt.publish(
                     self.mqtt_slideshow_presets_topic,
                     json.dumps(defaults),
@@ -2095,12 +2099,25 @@ class monitor_and_display:
                     client.subscribe(self.mqtt_slideshow_presets_topic, qos=1)
                 except Exception:
                     pass
-                # Bootstrap default presets if broker has none after 3 seconds.
-                # Only start the timer on the first-ever connect; on reconnects
-                # _presets_from_broker is already True (we've seen the retained
-                # presets before) so we skip re-bootstrapping, which would
-                # otherwise overwrite a user "Clear all" action.
-                if not self._presets_from_broker:
+                # Bootstrap presets:
+                #  1) If we have presets persisted on disk, republish them as retained
+                #     so the broker (which may have lost retain across its own restart
+                #     or a fresh container) is reseeded from our local source of truth.
+                #  2) Otherwise, wait briefly for a retained message from the broker;
+                #     if none arrives, generate defaults from installed collections.
+                if self._slideshow_presets:
+                    try:
+                        client.publish(
+                            self.mqtt_slideshow_presets_topic,
+                            json.dumps(self._slideshow_presets),
+                            qos=1, retain=True,
+                        )
+                        self._presets_from_broker = True
+                        self.log.info('Republished %d persisted preset(s) to %s',
+                                      len(self._slideshow_presets), self.mqtt_slideshow_presets_topic)
+                    except Exception as e:
+                        self.log.warning('Failed to republish persisted presets: %s', e)
+                elif not self._presets_from_broker:
                     if self._presets_bootstrap_timer:
                         self._presets_bootstrap_timer.cancel()
                     t = threading.Timer(3.0, self._bootstrap_default_presets)
@@ -2408,6 +2425,31 @@ class monitor_and_display:
                 json.dump(data, f)
         except Exception as e:
             self.log.warning('Failed to save slideshow override: %s', e)
+
+    # ── Slideshow presets persistence ──────────────────────────────────────
+
+    def _load_slideshow_presets(self):
+        """Load persisted slideshow presets from /data/slideshow_presets.json."""
+        try:
+            if os.path.isfile(self.slideshow_presets_path):
+                with open(self.slideshow_presets_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    self._slideshow_presets = data
+                    self.log.info('Loaded %d persisted slideshow preset(s)', len(data))
+        except Exception as e:
+            self.log.warning('Failed to load slideshow presets: %s', e)
+            self._slideshow_presets = []
+
+    def _save_slideshow_presets(self, presets):
+        """Persist slideshow presets to /data/slideshow_presets.json."""
+        try:
+            os.makedirs('/data', exist_ok=True)
+            with open(self.slideshow_presets_path, 'w', encoding='utf-8') as f:
+                json.dump(presets if isinstance(presets, list) else [], f)
+            self._slideshow_presets = presets if isinstance(presets, list) else []
+        except Exception as e:
+            self.log.warning('Failed to save slideshow presets: %s', e)
 
     def _publish_slideshow_state(self):
         """Publish current slideshow mode, settings, and active paths to MQTT."""
@@ -3058,12 +3100,14 @@ class monitor_and_display:
                     self._publish_ack('slideshow/override/set', 'error', 'Failed to queue override apply', req_id)
                 return
             if cmd == 'slideshow/presets/set':
-                # Clients publish their full presets array here; backend re-publishes
-                # it as a retained message so all other clients receive it on subscribe.
+                # Clients publish their full presets array here; backend persists it
+                # to disk and re-publishes as a retained message so all other clients
+                # receive it on subscribe and so it survives container recreation.
                 try:
                     presets = json.loads(payload_raw) if payload_raw else []
                     if not isinstance(presets, list):
                         presets = []
+                    self._save_slideshow_presets(presets)
                     self._mqtt.publish(
                         self.mqtt_slideshow_presets_topic,
                         json.dumps(presets),
@@ -3080,6 +3124,7 @@ class monitor_and_display:
                     if not generated:
                         self._publish_ack('slideshow/presets/generate', 'error', 'No images found', req_id)
                         return
+                    self._save_slideshow_presets(generated)
                     self._mqtt.publish(
                         self.mqtt_slideshow_presets_topic,
                         json.dumps(generated),
