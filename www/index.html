@@ -1812,18 +1812,14 @@
         client.publish(TOPIC_CMD_PREFIX + '/slideshow/matte_options/request', '{}', { qos: 1 });
       }
     }
-    // Excluded matte types: multi-image (triptych/mix/squares) require TV-side
-    // composition that this app's single-image pipeline can't produce, and
-    // panoramic is rejected by the TV with error -7 on most uploads. All are
-    // suppressed everywhere in the UI.
-    const _MATTE_TYPES_EXCLUDED = new Set(['triptych', 'mix', 'squares', 'panoramic']);
-    // Excluded colors: 'warm' and 'sage' are consistently rejected by the TV (error -7).
-    const _MATTE_COLORS_EXCLUDED = new Set(['warm', 'sage']);
     // Per-combo blocklist populated from scripts/probe_mattes.py (served at
-    // /api/matte_blocklist). When `probed=true`, this is authoritative and
-    // the blanket type/color excludes above are ignored — the probe captured
-    // exactly what THIS TV accepts. When false (never probed), we fall back
-    // to the conservative blanket excludes.
+    // /api/matte_blocklist). The probe is the source of truth: it tests every
+    // (type, color) combo against the TV and records what's actually rejected
+    // with error -7. Investigation showed combos previously assumed to be
+    // globally bad (e.g. shadowbox_sage) work fine — the TV's rejections are
+    // image/orientation specific, not categorical. Trust the TV's own
+    // get_matte_list for the universe of options and the probe blocklist for
+    // which combinations to hide.
     const slideshowMatteBlocklist = { probed: false, badCombos: new Set() };
     function _comboKey(t, c) { return c ? `${t}_${c}` : t; }
     async function loadMatteBlocklist() {
@@ -1840,18 +1836,11 @@
     function matteOptionList() {
       // 'none' is first so the picker visibly defaults to "none" whenever no override is set.
       const opts = ['none'];
-      const probed = slideshowMatteBlocklist.probed;
       const bad = slideshowMatteBlocklist.badCombos;
-      const rawTypes = (slideshowMatteTypes && slideshowMatteTypes.length) ? slideshowMatteTypes
+      const types = (slideshowMatteTypes && slideshowMatteTypes.length) ? slideshowMatteTypes
         : ['shadowbox', 'modern', 'flexible'];
-      // Honor blanket exclusions only when no probe has been run; otherwise the
-      // probe is the source of truth.
-      const types = probed ? rawTypes.filter(Boolean)
-                           : rawTypes.filter(t => t && !_MATTE_TYPES_EXCLUDED.has(t));
-      const rawColors = (slideshowMatteColors && slideshowMatteColors.length) ? slideshowMatteColors
+      const colors = (slideshowMatteColors && slideshowMatteColors.length) ? slideshowMatteColors
         : ['polar', 'neutral', 'apricot'];
-      const colors = probed ? rawColors.filter(Boolean)
-                            : rawColors.filter(c => c && !_MATTE_COLORS_EXCLUDED.has(c));
       for (const t of types) {
         if (!t || t === 'none') continue;
         for (const c of colors) {
@@ -1860,7 +1849,6 @@
           opts.push(`${t}_${c}`);
         }
       }
-      // (No explicit __default__ entry — 'none' is the cleared/no-override choice.)
       return opts;
     }
     // Visual hints for the on-thumbnail matte color preview.
@@ -1892,11 +1880,14 @@
       mint:     '#bfe2c0',
       seafoam:  '#9ad4c2',
       moss:     '#7a986a',
+      sage:     '#a8b89a',
       // Blues.
       sky:      '#a4c8e3',
       powder:   '#c0d8e8',
       // Purples.
       lavender: '#cbc1e3',
+      // Warm neutral (cream / beige).
+      warm:     '#e8d6b8',
     };
     const _MATTE_UNKNOWN_WARNED = new Set();
     function _matteColorHex(name) {
@@ -1910,16 +1901,21 @@
     // Per-type base thickness (px) for the thumbnail-scale preview. Values are
     // intentionally separated so each style is visually distinguishable at a
     // glance — shadowbox is the deepest mount, modern the thinnest.
+    // Multi-image types (triptych/mix/squares) and panoramic are previewed
+    // as flat mattes here (the single-image preview can't faithfully render
+    // their multi-cell composition); thickness still differentiates them.
     const _MATTE_THICK_MAP = {
       shadowbox: 10, modernthin: 4, modern: 10, modernwide: 32,
-      flexible: 5
+      flexible: 5,
+      panoramic: 14, triptych: 8, squares: 10, mix: 12
     };
     // Per-type base thickness (px) for the modal-scale preview. The modal
     // shows a near-fullscreen image so the matte band can be much chunkier;
     // larger separation between styles is much easier to read at this size.
     const _MATTE_THICK_MAP_MODAL = {
       shadowbox: 56, modernthin: 16, modern: 44, modernwide: 128,
-      flexible: 22
+      flexible: 22,
+      panoramic: 64, triptych: 36, squares: 48, mix: 56
     };
     // Build a per-type CSS style string that visually approximates each Samsung
     // matte style (not just a flat colored border). `scale` is 'thumb' or 'modal'.

@@ -2548,8 +2548,10 @@ class monitor_and_display:
             except Exception as e:
                 self.log.debug('get_matte_list failed, using fallback: %s', e)
                 self._matte_options_cache = {
-                    'matte_types': ['none', 'shadowbox', 'modern', 'flexible'],
-                    'matte_colors': ['polar', 'neutral', 'apricot', 'sand', 'seafoam', 'lavender', 'burgandy', 'navy', 'forest', 'dark'],
+                    'matte_types':  ['none', 'shadowbox', 'modern', 'modernthin', 'modernwide',
+                                     'flexible', 'panoramic', 'triptych', 'mix', 'squares'],
+                    'matte_colors': ['polar', 'neutral', 'apricot', 'sand', 'seafoam', 'lavender',
+                                     'burgandy', 'navy', 'forest', 'dark', 'warm', 'sage'],
                 }
         try:
             payload = json.dumps(self._matte_options_cache, separators=(',', ':'))
