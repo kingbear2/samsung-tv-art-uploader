@@ -1833,8 +1833,7 @@
           opts.push(`${t}_${c}`);
         }
       }
-      // Last: explicit "use global default" for users who do want env-level fallback.
-      opts.push('__default__');
+      // (No explicit __default__ entry — 'none' is the cleared/no-override choice.)
       return opts;
     }
     // Visual hints for the on-thumbnail matte color preview.
