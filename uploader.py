@@ -2548,7 +2548,7 @@ class monitor_and_display:
             except Exception as e:
                 self.log.debug('get_matte_list failed, using fallback: %s', e)
                 self._matte_options_cache = {
-                    'matte_types': ['none', 'shadowbox', 'modern', 'flexible', 'panoramic', 'triptych', 'mix', 'squares'],
+                    'matte_types': ['none', 'shadowbox', 'modern', 'flexible', 'panoramic'],
                     'matte_colors': ['polar', 'neutral', 'apricot', 'warm', 'sand', 'seafoam', 'sage', 'lavender', 'burgandy', 'navy', 'forest', 'dark'],
                 }
         try:

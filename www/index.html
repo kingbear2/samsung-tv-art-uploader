@@ -1800,11 +1800,16 @@
         client.publish(TOPIC_CMD_PREFIX + '/slideshow/matte_options/request', '{}', { qos: 1 });
       }
     }
+    // Multi-image matte types (triptych, mix, squares) require the TV to compose
+    // several images into a single panel — uploads throw errors with this app's
+    // single-image pipeline, so they're suppressed everywhere in the UI.
+    const _MATTE_TYPES_EXCLUDED = new Set(['triptych', 'mix', 'squares']);
     function matteOptionList() {
       // 'none' is first so the picker visibly defaults to "none" whenever no override is set.
       const opts = ['none'];
-      const types = (slideshowMatteTypes && slideshowMatteTypes.length) ? slideshowMatteTypes
-        : ['shadowbox', 'modern', 'flexible', 'panoramic', 'triptych', 'mix', 'squares'];
+      const rawTypes = (slideshowMatteTypes && slideshowMatteTypes.length) ? slideshowMatteTypes
+        : ['shadowbox', 'modern', 'flexible', 'panoramic'];
+      const types = rawTypes.filter(t => t && !_MATTE_TYPES_EXCLUDED.has(t));
       const colors = (slideshowMatteColors && slideshowMatteColors.length) ? slideshowMatteColors
         : ['polar', 'neutral', 'apricot', 'warm'];
       for (const t of types) {
@@ -1830,7 +1835,7 @@
       cotton:   '#ece1cc',
       neutral:  '#cfc7b4',
       sand:     '#d2bf95',
-      antique:  '#bfa275',
+      antique:  '#ece3d2',
       warm:     '#c9a36a',
       // Black / grays.
       black:    '#141414',
@@ -1838,12 +1843,15 @@
       // Reds / oranges / pinks.
       apricot:  '#e8783c',
       coral:    '#f06848',
+      redorange:'#d44a26',
       byzantine:'#9a1a26',
       burgundy: '#5a1020',
       flamingo: '#e88a98',
       dusty:    '#b97a86',
       // Greens.
       mint:     '#bfe2c0',
+      sage:     '#a4b48a',
+      seafoam:  '#9ad4c2',
       moss:     '#7a986a',
       // Blues.
       sky:      '#a4c8e3',
@@ -1864,15 +1872,15 @@
     // intentionally separated so each style is visually distinguishable at a
     // glance — shadowbox is the deepest mount, modern the thinnest.
     const _MATTE_THICK_MAP = {
-      shadowbox: 10, modern: 2, flexible: 5, panoramic: 8,
-      triptych: 5, mix: 6, squares: 5
+      shadowbox: 10, modernthin: 2, modern: 5, modernwide: 16,
+      flexible: 5, panoramic: 8
     };
     // Per-type base thickness (px) for the modal-scale preview. The modal
     // shows a near-fullscreen image so the matte band can be much chunkier;
     // larger separation between styles is much easier to read at this size.
     const _MATTE_THICK_MAP_MODAL = {
-      shadowbox: 56, modern: 6, flexible: 22, panoramic: 44,
-      triptych: 22, mix: 28, squares: 24
+      shadowbox: 56, modernthin: 8, modern: 22, modernwide: 64,
+      flexible: 22, panoramic: 44
     };
     // Build a per-type CSS style string that visually approximates each Samsung
     // matte style (not just a flat colored border). `scale` is 'thumb' or 'modal'.
@@ -1898,28 +1906,9 @@
           const small = Math.max(2, Math.round(T * 0.35));
           return `box-shadow: inset 0 ${big}px 0 0 ${c}, inset 0 -${big}px 0 0 ${c}, inset ${small}px 0 0 0 ${c}, inset -${small}px 0 0 0 ${c};`;
         }
-        case 'triptych': {
-          // Full border + two vertical dividers via linear-gradient bands.
-          const half = Math.max(1, Math.round(T * 0.35));
-          return `box-shadow: inset 0 0 0 ${T}px ${c}; background: linear-gradient(to right,`
-               + ` transparent calc(33.333% - ${half}px), ${c} calc(33.333% - ${half}px),`
-               + ` ${c} calc(33.333% + ${half}px), transparent calc(33.333% + ${half}px),`
-               + ` transparent calc(66.666% - ${half}px), ${c} calc(66.666% - ${half}px),`
-               + ` ${c} calc(66.666% + ${half}px), transparent calc(66.666% + ${half}px));`;
-        }
-        case 'mix': {
-          // Asymmetric: wider left rail, normal others.
-          const big = Math.round(T * 1.8);
-          return `box-shadow: inset ${big}px 0 0 0 ${c}, inset -${T}px 0 0 0 ${c}, inset 0 ${T}px 0 0 ${c}, inset 0 -${T}px 0 0 ${c};`;
-        }
-        case 'squares': {
-          // Full border + crosshair (one vertical + one horizontal divider).
-          const half = Math.max(1, Math.round(T * 0.3));
-          return `box-shadow: inset 0 0 0 ${T}px ${c}; background:`
-               + ` linear-gradient(to right, transparent calc(50% - ${half}px), ${c} calc(50% - ${half}px), ${c} calc(50% + ${half}px), transparent calc(50% + ${half}px)),`
-               + ` linear-gradient(to bottom, transparent calc(50% - ${half}px), ${c} calc(50% - ${half}px), ${c} calc(50% + ${half}px), transparent calc(50% + ${half}px));`;
-        }
         case 'modern':
+        case 'modernwide':
+        case 'modernthin':
         case 'flexible':
         default:
           // Plain flat matte — thickness encodes the type (modern thinnest).
@@ -1945,6 +1934,10 @@
       document.removeEventListener('keydown', _slModalKeyHandler);
     }
     function _slModalKeyHandler(e) {
+      // Don't hijack keys while the user is interacting with a form control
+      // inside the modal (e.g. the matte <select> dropdown is open).
+      const t = e.target;
+      if (t && (t.tagName === 'SELECT' || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
       if (e.key === 'Escape') closeSlideshowModal();
       else if (e.key === 'ArrowLeft') _slModalNavigate(-1);
       else if (e.key === 'ArrowRight') _slModalNavigate(1);
@@ -2061,6 +2054,16 @@
       // Matte change → publish, update local map, refresh modal preview AND grid.
       // Always operates on the CURRENTLY DISPLAYED image (idx may have advanced).
       const $matteSel = overlay.querySelector('#sl-modal-matte');
+      // Workaround: in some Chromium builds the native <select> popup doesn't
+      // open on plain mouseclick when the select sits inside a fixed-position
+      // overlay (keyboard / tab still works). Explicitly invoke showPicker() so
+      // a click reliably opens the dropdown.
+      $matteSel.addEventListener('mousedown', (e) => {
+        if (typeof $matteSel.showPicker === 'function') {
+          e.preventDefault();
+          try { $matteSel.focus(); $matteSel.showPicker(); } catch (_) { /* unsupported — fall back to default */ }
+        }
+      });
       $matteSel.addEventListener('change', () => {
         const cur = _slModalList[_slModalIdx];
         if (!cur) return;
