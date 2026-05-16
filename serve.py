@@ -243,48 +243,11 @@ class FallbackHandler(SimpleHTTPRequestHandler):
             return self._json(200, self._read_ui_mqtt())
         if self.path.startswith('/api/collections-list'):
             return self._handle_api_get_collections_list()
-        if self.path.startswith('/api/matte_blocklist'):
-            return self._handle_api_get_matte_blocklist()
         if self.path.startswith('/api/matte_probe_status'):
             return self._handle_api_get_matte_probe_status()
         if self.path in ('/favicon.png', '/favicon.ico'):
             return self._serve_favicon()
         return super().do_GET()
-
-    def _handle_api_get_matte_blocklist(self):
-        """Return the matte blocklist JSON written by scripts/probe_mattes.py.
-        Returns an empty stub if probing has never been run.
-
-        Also fetches the TV's current identity (model + firmware) from its
-        unauthenticated REST endpoint and compares it to what was captured
-        at probe time. If they differ, the blocklist is marked `stale: true`
-        and `bad_combos` is cleared server-side so the UI doesn't hide combos
-        based on a previous firmware's behavior. The probed/current device
-        info is always returned for diagnostics."""
-        path = '/data/matte_blocklist.json'
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.loads(f.read() or '{}')
-        except FileNotFoundError:
-            data = {'bad_combos': [], 'probed_at': None}
-        except Exception as e:
-            return self._json(500, {'error': str(e)})
-        current = _get_cached_tv_device_info()
-        probed = data.get('tv_device') if isinstance(data.get('tv_device'), dict) else {}
-        # Only fingerprint-compare when both sides have the keys; if either is
-        # missing (old blocklist, TV unreachable) treat as not-stale so we
-        # don't gratuitously throw away a valid blocklist.
-        stale = False
-        if probed and current:
-            for k in ('model', 'firmware_version'):
-                if probed.get(k) and current.get(k) and probed[k] != current[k]:
-                    stale = True
-                    break
-        data['current_tv_device'] = current
-        data['stale'] = stale
-        if stale:
-            data['bad_combos'] = []
-        return self._json(200, data)
 
     def _handle_api_get_matte_probe_status(self):
         """Return the per-image matte probe runtime state written by
