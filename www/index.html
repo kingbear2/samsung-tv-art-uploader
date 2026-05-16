@@ -1815,8 +1815,8 @@
     // panoramic is rejected by the TV with error -7 on most uploads. All are
     // suppressed everywhere in the UI.
     const _MATTE_TYPES_EXCLUDED = new Set(['triptych', 'mix', 'squares', 'panoramic']);
-    // Excluded colors: 'warm' is consistently rejected by the TV (error -7).
-    const _MATTE_COLORS_EXCLUDED = new Set(['warm']);
+    // Excluded colors: 'warm' and 'sage' are consistently rejected by the TV (error -7).
+    const _MATTE_COLORS_EXCLUDED = new Set(['warm', 'sage']);
     function matteOptionList() {
       // 'none' is first so the picker visibly defaults to "none" whenever no override is set.
       const opts = ['none'];
@@ -1864,7 +1864,6 @@
       dusty:    '#b97a86',
       // Greens.
       mint:     '#bfe2c0',
-      sage:     '#a4b48a',
       seafoam:  '#9ad4c2',
       moss:     '#7a986a',
       // Blues.
