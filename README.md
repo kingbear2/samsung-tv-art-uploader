@@ -24,6 +24,7 @@ Built on top of [NickWaterton/samsung-tv-ws-api](https://github.com/NickWaterton
 - **Saved Selections** — name and save any image set as a preset; synced across all clients via retained MQTT; auto-generates thematic defaults (Landscapes, Marine, Impressionism, etc.) on first start
 - **Per-collection carousels** with S/M/L thumbnail size controls and a shuffle preview mode
 - **Drag-and-drop ordering** — reorder hand-picked images in the Selected overview to control sequential playback order; ordinal badges (1, 2, 3…) show the current order
+- **Per-image passepartout (matte)** — pick a matte type and color per image directly from each thumbnail in the slideshow grid; overrides persist to disk and are applied on next upload, or live-applied via `change_matte` if the image is already on the TV. Falls back to the global `MATTE`/`PORTRAIT_MATTE` defaults from the env when no override is set
 - [Home Assistant Lovelace card](https://github.com/kohlerryan/samsung-tv-art-card) with live progress display during refresh operations
 - mDNS advertisement (`samsung-tv-art.local`) via Avahi — requires `network_mode: host`, macvlan, or macvlan+bridge (see compose example)
 

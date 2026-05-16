@@ -38,6 +38,9 @@ class FrameTVArtCard extends HTMLElement {
     this._slideshowCurrentPaths = [];
     this._slideshowOverridePaths = [];
     this._slideshowSelected = new Set();
+    this._slideshowMattes = {};
+    this._slideshowMatteTypes = [];
+    this._slideshowMatteColors = [];
     this._slideshowMaxUploads = 10;
     this._slideshowMaxUploadsBaseline = 10;  // server-confirmed value; used to detect changes in Apply
     this._slideshowUploading = false;
@@ -94,6 +97,8 @@ class FrameTVArtCard extends HTMLElement {
       slideshow_attr_topic: config.slideshow_attr_topic || 'frame_tv/slideshow/attributes',
       slideshow_available_topic: config.slideshow_available_topic || 'frame_tv/slideshow/available',
       slideshow_presets_topic: config.slideshow_presets_topic || 'frame_tv/slideshow/presets',
+      slideshow_mattes_topic: config.slideshow_mattes_topic || 'frame_tv/slideshow/mattes',
+      slideshow_matte_options_topic: config.slideshow_matte_options_topic || 'frame_tv/slideshow/matte_options',
       // Optional: allow overriding legacy helpers if desired
       add_button_entity: config.add_button_entity, // legacy keys no longer used
       remove_button_entity: config.remove_button_entity, // legacy keys no longer used
@@ -299,8 +304,37 @@ class FrameTVArtCard extends HTMLElement {
           { type: 'mqtt/subscribe', topic: this._config.slideshow_presets_topic }
         );
 
-    Promise.all([ensureAck, ensureCmd, ensureSyncAck, ensureSlideshowAttrs, ensureSlideshowAvail, ensurePreviewAck, ensureLog, ensurePresets])
-      .then(([ackUnsub, cmdUnsub, syncAckUnsub, slideshowAttrsUnsub, slideshowAvailUnsub, previewUnsub, logUnsub, presetsUnsub]) => {
+    const ensureMattes = this._slideshowMattesUnsub
+      ? Promise.resolve(this._slideshowMattesUnsub)
+      : this._hass.connection.subscribeMessage(
+          (msg) => {
+            try {
+              const raw = msg && (msg.payload || msg);
+              const obj = JSON.parse(typeof raw === 'string' ? raw : JSON.stringify(raw));
+              this._slideshowMattes = (obj && typeof obj === 'object') ? obj : {};
+            } catch(_) { this._slideshowMattes = {}; }
+            if (this._overridePanelOpen) this._renderOverrideGrid();
+          },
+          { type: 'mqtt/subscribe', topic: this._config.slideshow_mattes_topic }
+        );
+
+    const ensureMatteOpts = this._slideshowMatteOptsUnsub
+      ? Promise.resolve(this._slideshowMatteOptsUnsub)
+      : this._hass.connection.subscribeMessage(
+          (msg) => {
+            try {
+              const raw = msg && (msg.payload || msg);
+              const obj = JSON.parse(typeof raw === 'string' ? raw : JSON.stringify(raw));
+              if (obj && Array.isArray(obj.matte_types)) this._slideshowMatteTypes = obj.matte_types;
+              if (obj && Array.isArray(obj.matte_colors)) this._slideshowMatteColors = obj.matte_colors;
+            } catch(_) {}
+            if (this._overridePanelOpen) this._renderOverrideGrid();
+          },
+          { type: 'mqtt/subscribe', topic: this._config.slideshow_matte_options_topic }
+        );
+
+    Promise.all([ensureAck, ensureCmd, ensureSyncAck, ensureSlideshowAttrs, ensureSlideshowAvail, ensurePreviewAck, ensureLog, ensurePresets, ensureMattes, ensureMatteOpts])
+      .then(([ackUnsub, cmdUnsub, syncAckUnsub, slideshowAttrsUnsub, slideshowAvailUnsub, previewUnsub, logUnsub, presetsUnsub, mattesUnsub, matteOptsUnsub]) => {
         if (!this._refreshAckUnsubscribe) this._refreshAckUnsubscribe = ackUnsub;
         if (!this._refreshCmdUnsubscribe) this._refreshCmdUnsubscribe = cmdUnsub;
         if (!this._syncAckUnsubscribe) this._syncAckUnsubscribe = syncAckUnsub;
@@ -309,6 +343,18 @@ class FrameTVArtCard extends HTMLElement {
         if (!this._slideshowPreviewUnsub) this._slideshowPreviewUnsub = previewUnsub;
         if (!this._logUnsubscribe) this._logUnsubscribe = logUnsub;
         if (!this._slideshowPresetsUnsub) this._slideshowPresetsUnsub = presetsUnsub;
+        if (!this._slideshowMattesUnsub) this._slideshowMattesUnsub = mattesUnsub;
+        if (!this._slideshowMatteOptsUnsub) this._slideshowMatteOptsUnsub = matteOptsUnsub;
+        // Ask backend for the TV's matte options once subscribed; backend publishes retained map.
+        if (!this._matteOptionsRequested) {
+          this._matteOptionsRequested = true;
+          try {
+            this._hass.callService('mqtt', 'publish', {
+              topic: 'frame_tv/cmd/slideshow/matte_options/request',
+              payload: '{}', qos: 1
+            });
+          } catch(_) {}
+        }
       })
       .catch(() => {})
       .finally(() => {
@@ -764,6 +810,25 @@ class FrameTVArtCard extends HTMLElement {
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
+  }
+
+  _matteOptionList() {
+    // Build a flat list of matte ids: '__default__' + 'none' + every type_color combo.
+    const opts = ['__default__', 'none'];
+    const types = (this._slideshowMatteTypes && this._slideshowMatteTypes.length)
+      ? this._slideshowMatteTypes
+      : ['shadowbox', 'modern', 'flexible', 'panoramic', 'triptych', 'mix', 'squares'];
+    const colors = (this._slideshowMatteColors && this._slideshowMatteColors.length)
+      ? this._slideshowMatteColors
+      : ['polar', 'neutral', 'apricot', 'warm'];
+    for (const t of types) {
+      if (!t || t === 'none') continue;
+      for (const c of colors) {
+        if (!c) continue;
+        opts.push(`${t}_${c}`);
+      }
+    }
+    return opts;
   }
 
   _formatInline(text) {
@@ -1494,6 +1559,15 @@ class FrameTVArtCard extends HTMLElement {
             font-size: 10px; font-weight: 700; color: #fff; line-height: 1;
             pointer-events: none;
           }
+          .ftv-op-matte {
+            position: absolute; bottom: 3px; right: 3px;
+            max-width: 70%;
+            font-size: 9px; line-height: 1; padding: 2px 4px;
+            background: rgba(0,0,0,0.72); color: #ddd;
+            border: 1px solid #555; border-radius: 4px;
+            cursor: pointer;
+          }
+          .ftv-op-matte.has-override { border-color: #6ab0f5; color: #6ab0f5; background: rgba(47,127,191,0.18); }
           .ftv-op-hint { padding: 16px 14px; font-size: 0.85em; color: rgba(255,255,255,0.4); text-align: center; }
           .ftv-coll-row { margin-bottom: 0; }
           .ftv-coll-header {
@@ -2371,7 +2445,16 @@ class FrameTVArtCard extends HTMLElement {
       const draggableAttr = (opts.draggable && !locked) ? ' draggable="true"' : '';
       const draggableCls = (opts.draggable && !locked) ? ' ftv-draggable' : '';
       const ordHtml = (opts.ordinal != null) ? `<div class="ftv-op-ord">${opts.ordinal}</div>` : '';
-      return `<div class="ftv-op-thumb${isSel ? ' selected' : ''}${locked ? ' disabled' : ''}${draggableCls}" data-path="${this._escapeHtml(img.path)}"${draggableAttr}><img data-src="${url}" alt="" onerror="this.style.display='none'"><div class="ftv-op-check">${isSel ? '&#10003;' : ''}</div>${ordHtml}</div>`;
+      const curMatte = (this._slideshowMattes && this._slideshowMattes[img.path]) || '';
+      const matteOpts = this._matteOptionList().map(m => {
+        const label = (m === '__default__') ? 'matte: default' : (m === 'none' ? 'matte: none' : m);
+        const val = (m === '__default__') ? '' : m;
+        const sel = (val === curMatte) ? ' selected' : '';
+        return `<option value="${this._escapeHtml(val)}"${sel}>${this._escapeHtml(label)}</option>`;
+      }).join('');
+      const matteCls = curMatte ? ' has-override' : '';
+      const matteHtml = `<select class="ftv-op-matte${matteCls}" data-matte-for="${this._escapeHtml(img.path)}" title="Passepartout (matte)">${matteOpts}</select>`;
+      return `<div class="ftv-op-thumb${isSel ? ' selected' : ''}${locked ? ' disabled' : ''}${draggableCls}" data-path="${this._escapeHtml(img.path)}"${draggableAttr}><img data-src="${url}" alt="" onerror="this.style.display='none'"><div class="ftv-op-check">${isSel ? '&#10003;' : ''}</div>${ordHtml}${matteHtml}</div>`;
     };
 
     // Selected overview at top, in user-controlled order (insertion order of
@@ -2480,7 +2563,9 @@ class FrameTVArtCard extends HTMLElement {
 
     if (!locked) {
       grid.querySelectorAll('.ftv-op-thumb').forEach(el => {
-        el.addEventListener('click', () => {
+        el.addEventListener('click', (e) => {
+          // Clicks on the matte select shouldn't toggle selection
+          if (e.target && e.target.classList && e.target.classList.contains('ftv-op-matte')) return;
           if (el.classList.contains('disabled')) return;
           const path = el.dataset.path;
           if (this._slideshowSelected.has(path)) {
@@ -2502,6 +2587,31 @@ class FrameTVArtCard extends HTMLElement {
           this._renderOverrideGrid();
         });
       });
+    }
+
+    // Per-image matte (passepartout) picker — always enabled, even when locked,
+    // because change_matte is a cheap re-mat with no upload.
+    grid.querySelectorAll('select.ftv-op-matte').forEach(sel => {
+      sel.addEventListener('click', (e) => { e.stopPropagation(); });
+      sel.addEventListener('mousedown', (e) => { e.stopPropagation(); });
+      sel.addEventListener('change', (e) => {
+        e.stopPropagation();
+        const path = sel.dataset.matteFor;
+        const val = sel.value || '';
+        if (!this._slideshowMattes) this._slideshowMattes = {};
+        if (val) this._slideshowMattes[path] = val;
+        else delete this._slideshowMattes[path];
+        if (this._hass) {
+          this._hass.callService('mqtt', 'publish', {
+            topic: 'frame_tv/cmd/slideshow/matte/set',
+            payload: JSON.stringify({ path, matte: (val || '__default__'), req_id: 'matte-' + Date.now() }),
+            qos: 1
+          });
+        }
+      });
+    });
+
+    if (!locked) {
 
       // Drag-and-drop reordering for the Selected overview thumbs.
       // The order of _slideshowSelected (a Set, insertion-ordered) is what gets

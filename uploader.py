@@ -375,6 +375,12 @@ class monitor_and_display:
         self.mqtt_slideshow_presets_topic = os.environ.get('SAMSUNG_TV_ART_MQTT_SLIDESHOW_PRESETS', 'frame_tv/slideshow/presets')
         self.slideshow_presets_path = '/data/slideshow_presets.json'
         self._slideshow_presets = []  # in-memory cache, source of truth for republish
+        # Per-image passepartout (matte) overrides — stored {path_rel: matte_id}
+        self.mqtt_slideshow_mattes_topic = os.environ.get('SAMSUNG_TV_ART_MQTT_SLIDESHOW_MATTES', 'frame_tv/slideshow/mattes')
+        self.mqtt_slideshow_matte_options_topic = os.environ.get('SAMSUNG_TV_ART_MQTT_SLIDESHOW_MATTE_OPTIONS', 'frame_tv/slideshow/matte_options')
+        self.matte_overrides_path = '/data/matte_overrides.json'
+        self._matte_overrides = {}
+        self._matte_options_cache = None  # {'matte_types':[...], 'matte_colors':[...]}
         self.ha_rest_enabled = False  # REST disabled in MQTT-only build
         self._mqtt = None
         self._presets_from_broker = False   # True once retained presets msg received
@@ -551,6 +557,7 @@ class monitor_and_display:
         # Load persisted slideshow override before MQTT so state is ready when topics publish
         self._load_slideshow_override()
         self._load_slideshow_presets()
+        self._load_matte_overrides()
         # Init MQTT if enabled
         if self.mqtt_enabled:
             self._init_mqtt()
@@ -1351,10 +1358,19 @@ class monitor_and_display:
                 # Multi-collection mode: filename includes collection subfolder
                 path = os.path.join(self.media_root, filename)
                 display_name = filename  # Show full relative path in logs
+                path_rel_for_matte = filename
             else:
                 # Single folder mode: simple filename
                 path = os.path.join(self.folder, filename)
                 display_name = filename
+                # Build a path_rel under media_root if possible, for matte lookup
+                try:
+                    if self.media_root and os.path.commonpath([self.media_root, path]) == self.media_root:
+                        path_rel_for_matte = os.path.relpath(path, self.media_root)
+                    else:
+                        path_rel_for_matte = filename
+                except Exception:
+                    path_rel_for_matte = filename
             
             # Verify file exists before attempting upload
             if not os.path.isfile(path):
@@ -1371,7 +1387,8 @@ class monitor_and_display:
                         pass
                 content_id = None
                 try:
-                    content_id = await self._upload_to_tv(file_data, file_type, self.matte)
+                    matte_for_upload = self._resolve_matte_for(path_rel_for_matte, os.path.basename(filename))
+                    content_id = await self._upload_to_tv(file_data, file_type, matte_for_upload)
                     consecutive_failures = 0  # Reset on success
                 except AssertionError:
                     self.log.warning('file: %s failed to upload (empty response)', display_name)
@@ -2128,6 +2145,7 @@ class monitor_and_display:
                 try:
                     self._publish_collections_state()
                     self._publish_settings_state()
+                    self._publish_matte_overrides()
                 except Exception:
                     pass
                 # Reset artwork state refresh timer so the main loop immediately
@@ -2450,6 +2468,94 @@ class monitor_and_display:
             self._slideshow_presets = presets if isinstance(presets, list) else []
         except Exception as e:
             self.log.warning('Failed to save slideshow presets: %s', e)
+
+    # ── Per-image matte (passepartout) overrides ───────────────────────────
+
+    def _load_matte_overrides(self):
+        """Load persisted per-image matte overrides from disk."""
+        try:
+            if os.path.isfile(self.matte_overrides_path):
+                with open(self.matte_overrides_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    # filter to {str: str}
+                    self._matte_overrides = {
+                        str(k): str(v) for k, v in data.items()
+                        if isinstance(k, str) and isinstance(v, str) and v
+                    }
+                    self.log.info('Loaded %d persisted matte override(s)', len(self._matte_overrides))
+        except Exception as e:
+            self.log.warning('Failed to load matte overrides: %s', e)
+            self._matte_overrides = {}
+
+    def _save_matte_overrides(self):
+        """Persist per-image matte overrides to disk."""
+        try:
+            os.makedirs('/data', exist_ok=True)
+            with open(self.matte_overrides_path, 'w', encoding='utf-8') as f:
+                json.dump(self._matte_overrides, f)
+        except Exception as e:
+            self.log.warning('Failed to save matte overrides: %s', e)
+
+    def _resolve_matte_for(self, path_rel, fname=None):
+        """Resolve effective matte for an image.
+        Priority: per-image override → CSV 'matte' column → global self.matte default.
+        """
+        try:
+            if path_rel and path_rel in self._matte_overrides:
+                return self._matte_overrides[path_rel]
+            if fname and fname in self._matte_overrides:
+                return self._matte_overrides[fname]
+            csv_rec = (
+                (path_rel and getattr(self, '_csv_by_path', {}).get(path_rel))
+                or (fname and self._csv_by_file.get(fname))
+                or {}
+            )
+            csv_matte = (csv_rec.get('matte') or '').strip()
+            if csv_matte:
+                return csv_matte
+        except Exception:
+            pass
+        return self.matte
+
+    def _publish_matte_overrides(self):
+        """Publish current per-image matte overrides as a retained MQTT map."""
+        if not self.mqtt_enabled or not self._mqtt:
+            return
+        try:
+            payload = json.dumps(self._matte_overrides, separators=(',', ':'))
+            self._mqtt.publish(self.mqtt_slideshow_mattes_topic, payload, qos=1, retain=True)
+        except Exception as e:
+            self.log.debug('MQTT mattes publish failed: %s', e)
+
+    async def _publish_matte_options(self):
+        """Fetch (and cache) the TV's matte_type/matte_color list, publish as retained."""
+        if not self.mqtt_enabled or not self._mqtt:
+            return
+        if self._matte_options_cache is None:
+            try:
+                mattes = await self.tv.get_matte_list(True)
+                # Library returns ([{matte_type:..}], [{color:..}]) when supported
+                if isinstance(mattes, (list, tuple)) and len(mattes) >= 2:
+                    types = [m.get('matte_type') for m in mattes[0] if isinstance(m, dict) and m.get('matte_type')]
+                    colors = [m.get('color') for m in mattes[1] if isinstance(m, dict) and m.get('color')]
+                    self._matte_options_cache = {'matte_types': types, 'matte_colors': colors}
+                elif isinstance(mattes, dict):
+                    self._matte_options_cache = {
+                        'matte_types': [m.get('matte_type') for m in (mattes.get('matte_types') or []) if isinstance(m, dict) and m.get('matte_type')],
+                        'matte_colors': [m.get('color') for m in (mattes.get('matte_colors') or []) if isinstance(m, dict) and m.get('color')],
+                    }
+            except Exception as e:
+                self.log.debug('get_matte_list failed, using fallback: %s', e)
+                self._matte_options_cache = {
+                    'matte_types': ['none', 'shadowbox', 'modern', 'flexible', 'panoramic', 'triptych', 'mix', 'squares'],
+                    'matte_colors': ['polar', 'neutral', 'apricot', 'warm', 'sand', 'seafoam', 'sage', 'lavender', 'burgandy', 'navy', 'forest', 'dark'],
+                }
+        try:
+            payload = json.dumps(self._matte_options_cache, separators=(',', ':'))
+            self._mqtt.publish(self.mqtt_slideshow_matte_options_topic, payload, qos=1, retain=True)
+        except Exception as e:
+            self.log.debug('MQTT matte_options publish failed: %s', e)
 
     def _publish_slideshow_state(self):
         """Publish current slideshow mode, settings, and active paths to MQTT."""
@@ -3142,6 +3248,51 @@ class monitor_and_display:
                 self.shown_content_ids = set()
                 self._publish_slideshow_state()
                 self._publish_ack('slideshow/override/clear', 'ok', 'Slideshow override cleared; auto mode restored', req_id)
+                return
+            if cmd == 'slideshow/matte/set':
+                # Set or clear per-image matte (passepartout). Persists to disk and,
+                # if the image is currently uploaded to the TV, applies live via change_matte.
+                try:
+                    if not isinstance(data, dict):
+                        self._publish_ack('slideshow/matte/set', 'error', 'Invalid JSON', req_id)
+                        return
+                    path = str(data.get('path', '')).strip()
+                    matte = str(data.get('matte', '')).strip() or 'none'
+                    if not path:
+                        self._publish_ack('slideshow/matte/set', 'error', 'Missing path', req_id)
+                        return
+                    # Empty matte (or 'default'/'__default__') clears the override → fall back to global
+                    if matte in ('', 'default', '__default__'):
+                        self._matte_overrides.pop(path, None)
+                        effective = self._resolve_matte_for(path, os.path.basename(path))
+                    else:
+                        self._matte_overrides[path] = matte
+                        effective = matte
+                    self._save_matte_overrides()
+                    self._publish_matte_overrides()
+                    # Apply live to TV if the image is uploaded
+                    content_id = None
+                    for k, v in self.uploaded_files.items():
+                        if v.get('path_rel') == path or k == os.path.basename(path):
+                            content_id = v.get('content_id')
+                            break
+                    if content_id:
+                        async def _apply():
+                            try:
+                                await self.tv.change_matte(content_id, effective, portrait_matte=effective)
+                            except Exception as ex:
+                                self.log.warning('change_matte failed for %s: %s', path, ex)
+                        self._schedule_command_coro(_apply(), 'slideshow/matte/set')
+                    self._publish_ack('slideshow/matte/set', 'ok', f'Matte set to {effective}', req_id)
+                except Exception as e:
+                    self._publish_ack('slideshow/matte/set', 'error', str(e), req_id)
+                return
+            if cmd == 'slideshow/matte_options/request':
+                fut = self._schedule_command_coro(self._publish_matte_options(), 'slideshow/matte_options/request')
+                if fut:
+                    self._publish_ack('slideshow/matte_options/request', 'ok', 'Matte options publishing', req_id)
+                else:
+                    self._publish_ack('slideshow/matte_options/request', 'error', 'Failed to schedule', req_id)
                 return
             if cmd == 'slideshow/available/request':
                 # Optional 'collections' field allows the UI to preview a staged

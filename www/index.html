@@ -212,6 +212,29 @@
       font-size: 11px; font-weight: 700; color: #fff; line-height: 1;
       pointer-events: none;
     }
+    .sl-thumb-matte {
+      position: absolute; bottom: 4px; right: 4px;
+      max-width: 75%;
+      font-size: 10px; line-height: 1; padding: 2px 4px;
+      background: rgba(0,0,0,0.7); color: #ddd;
+      border: 1px solid #555; border-radius: 4px;
+      cursor: pointer;
+    }
+    .sl-thumb-matte.has-override { border-color: #6ab0f5; color: #6ab0f5; background: rgba(47,127,191,0.18); }
+    /* Per-image matte (passepartout) picker — bottom-right of each thumb */
+    .sl-thumb-matte {
+      position: absolute; right: 3px; bottom: 3px;
+      max-width: 70%;
+      background: rgba(0,0,0,0.7); color: #e0d8d2;
+      border: 1px solid rgba(255,255,255,0.18); border-radius: 4px;
+      font-size: 10px; padding: 2px 4px;
+      cursor: pointer;
+      opacity: 0; transition: opacity 0.12s;
+    }
+    .sl-thumb:hover .sl-thumb-matte,
+    .sl-thumb-matte:focus,
+    .sl-thumb-matte.has-override { opacity: 1; }
+    .sl-thumb-matte.has-override { border-color: #f0a020; color: #f0a020; }
     /* Size button group */
     .sl-size-btns { display: flex; gap: 3px; }
     .sl-size-btn {
@@ -620,9 +643,11 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ broker: broker, username: username, password: password })
         }).catch(() => {});
-        client.subscribe([TOPIC_ATTR, TOPIC_STATE, TOPIC_COLL_ATTR, TOPIC_SELECTED, TOPIC_SETTINGS_ATTR, TOPIC_SLIDESHOW_STATE, TOPIC_SLIDESHOW_ATTR, TOPIC_SLIDESHOW_AVAIL, TOPIC_SLIDESHOW_PRESETS, TOPIC_LOG, `${TOPIC_CMD_PREFIX}/collections/refresh`, `${TOPIC_ACK_PREFIX}/#`]);
+        client.subscribe([TOPIC_ATTR, TOPIC_STATE, TOPIC_COLL_ATTR, TOPIC_SELECTED, TOPIC_SETTINGS_ATTR, TOPIC_SLIDESHOW_STATE, TOPIC_SLIDESHOW_ATTR, TOPIC_SLIDESHOW_AVAIL, TOPIC_SLIDESHOW_PRESETS, TOPIC_SLIDESHOW_MATTES, TOPIC_SLIDESHOW_MATTE_OPTS, TOPIC_LOG, `${TOPIC_CMD_PREFIX}/collections/refresh`, `${TOPIC_ACK_PREFIX}/#`]);
         requestSlideshowAvailable();
         scheduleAvailableRetry();
+        // Ask the backend to fetch the TV's available matte types/colors and publish them retained.
+        requestMatteOptions();
         // Retained messages arrive as a burst after subscribe. Defer sync so the
         // trigger text reflects the fully-settled state after all messages land.
         setTimeout(() => { syncTriggerText(); updateButtons(); }, 600);
@@ -695,6 +720,21 @@
               slideshowPresets = JSON.parse(payload.toString() || '[]');
               if (!Array.isArray(slideshowPresets)) slideshowPresets = [];
               renderPresets();
+            } catch(_) {}
+          }
+          if (topic === TOPIC_SLIDESHOW_MATTES) {
+            try {
+              const m = JSON.parse(payload.toString() || '{}');
+              slideshowMattes = (m && typeof m === 'object') ? m : {};
+              renderSlideshowGrid();
+            } catch(_) {}
+          }
+          if (topic === TOPIC_SLIDESHOW_MATTE_OPTS) {
+            try {
+              const o = JSON.parse(payload.toString() || '{}');
+              if (Array.isArray(o.matte_types)) slideshowMatteTypes = o.matte_types;
+              if (Array.isArray(o.matte_colors)) slideshowMatteColors = o.matte_colors;
+              renderSlideshowGrid();
             } catch(_) {}
           }
           if (topic === TOPIC_SLIDESHOW_AVAIL) {
@@ -826,6 +866,8 @@
     const TOPIC_SLIDESHOW_ATTR  = 'frame_tv/slideshow/attributes';
     const TOPIC_SLIDESHOW_AVAIL = 'frame_tv/slideshow/available';
     const TOPIC_SLIDESHOW_PRESETS = 'frame_tv/slideshow/presets';
+    const TOPIC_SLIDESHOW_MATTES = 'frame_tv/slideshow/mattes';
+    const TOPIC_SLIDESHOW_MATTE_OPTS = 'frame_tv/slideshow/matte_options';
     const TOPIC_LOG = 'frame_tv/log';
     const TOPIC_CMD_PREFIX = 'frame_tv/cmd';
     const $refresh = null; // Refresh button removed — covered by Shuffle + Apply
@@ -1642,6 +1684,41 @@
     // ── Saved Presets (MQTT-backed, retained on frame_tv/slideshow/presets) ────────────
     const SL_PRESETS_KEY = 'sl-presets'; // kept for migration only
     let slideshowPresets = [];
+    // ── Per-image matte (passepartout) overrides ──────────────────────────────────────
+    let slideshowMattes = {};                // { path_rel: matte_id }
+    let slideshowMatteTypes = [];            // available matte type names from TV
+    let slideshowMatteColors = [];           // available matte color names from TV
+    let _matteOptionsRequested = false;
+    function publishMatte(path, matte) {
+      if (typeof client !== 'undefined' && client) {
+        client.publish(TOPIC_CMD_PREFIX + '/slideshow/matte/set',
+          JSON.stringify({ path, matte: (matte || '__default__'), req_id: 'matte-' + Date.now() }),
+          { qos: 1 });
+      }
+    }
+    function requestMatteOptions() {
+      if (_matteOptionsRequested) return;
+      _matteOptionsRequested = true;
+      if (typeof client !== 'undefined' && client) {
+        client.publish(TOPIC_CMD_PREFIX + '/slideshow/matte_options/request', '{}', { qos: 1 });
+      }
+    }
+    function matteOptionList() {
+      // Build a flat option list of matte ids: 'none' + every type_color combo for non-'none' types.
+      const opts = ['__default__', 'none'];
+      const types = (slideshowMatteTypes && slideshowMatteTypes.length) ? slideshowMatteTypes
+        : ['shadowbox', 'modern', 'flexible', 'panoramic', 'triptych', 'mix', 'squares'];
+      const colors = (slideshowMatteColors && slideshowMatteColors.length) ? slideshowMatteColors
+        : ['polar', 'neutral', 'apricot', 'warm'];
+      for (const t of types) {
+        if (!t || t === 'none') continue;
+        for (const c of colors) {
+          if (!c) continue;
+          opts.push(`${t}_${c}`);
+        }
+      }
+      return opts;
+    }
     function publishPresets(arr) {
       if (typeof client !== 'undefined' && client) {
         client.publish(TOPIC_CMD_PREFIX + '/slideshow/presets/set', JSON.stringify(arr), { qos: 1 });
@@ -2004,10 +2081,20 @@
         const draggableAttr = opts.draggable ? ' draggable="true"' : '';
         const draggableCls = opts.draggable ? ' sl-draggable' : '';
         const ordHtml = (opts.ordinal != null) ? `<div class="sl-thumb-ord">${opts.ordinal}</div>` : '';
+        const curMatte = slideshowMattes[img.path] || '';
+        const hasOverrideCls = curMatte ? ' has-override' : '';
+        const matteOpts = matteOptionList().map(m => {
+          const label = (m === '__default__') ? 'matte: default' : (m === 'none' ? 'matte: none' : m);
+          const val = (m === '__default__') ? '' : m;
+          const sel = (val === curMatte) ? ' selected' : '';
+          return `<option value="${escapeHtml(val)}"${sel}>${escapeHtml(label)}</option>`;
+        }).join('');
+        const matteHtml = `<select class="sl-thumb-matte${hasOverrideCls}" data-matte-for="${escapeHtml(img.path)}" title="Passepartout (matte) for this image">${matteOpts}</select>`;
         return `<div class="sl-thumb${isSel ? ' selected' : ''}${draggableCls}" data-path="${escapeHtml(img.path)}"${draggableAttr}>
           <img data-src="${thumbUrl}" alt="${escapeHtml(img.title || img.file)}" onerror="this.style.display='none'">
           <div class="sl-thumb-check">${isSel ? '\u2713' : ''}</div>
           ${ordHtml}
+          ${matteHtml}
         </div>`;
       }
 
@@ -2145,6 +2232,21 @@
           }
           updateSlCounter();
           renderSlideshowGrid();
+        });
+      });
+
+      // Per-image matte (passepartout) picker — don't propagate to thumb click.
+      $slGrid.querySelectorAll('select.sl-thumb-matte').forEach(sel => {
+        sel.addEventListener('click', (e) => { e.stopPropagation(); });
+        sel.addEventListener('mousedown', (e) => { e.stopPropagation(); });
+        sel.addEventListener('change', (e) => {
+          e.stopPropagation();
+          const path = sel.dataset.matteFor;
+          const val = sel.value || '';
+          // Optimistic local update; broker retain will confirm.
+          if (val) slideshowMattes[path] = val;
+          else delete slideshowMattes[path];
+          publishMatte(path, val);
         });
       });
 
