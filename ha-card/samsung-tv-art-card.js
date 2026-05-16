@@ -42,6 +42,24 @@ class FrameTVArtCard extends HTMLElement {
     this._slideshowMatteTypes = [];
     this._slideshowMatteColors = [];
     this._slideshowMaxUploads = 10;
+    // Restore in-progress (unapplied) selection from localStorage so a frontend
+    // refresh / card re-instantiation doesn't lose unsaved work. Must run BEFORE
+    // the first MQTT seed (which is gated on `_slideshowSelected.size === 0`).
+    try {
+      const _slRaw = localStorage.getItem('ftv-card-sl-inprogress-v1');
+      if (_slRaw) {
+        const _slData = JSON.parse(_slRaw);
+        const _slAge = Date.now() - (_slData && _slData.ts ? _slData.ts : 0);
+        if (_slAge < 24 * 60 * 60 * 1000 && _slData && Array.isArray(_slData.selected) && _slData.selected.length) {
+          this._slideshowSelected = new Set(_slData.selected);
+          if (typeof _slData.maxUploads === 'number' && _slData.maxUploads > 0) {
+            this._slideshowMaxUploads = _slData.maxUploads;
+          }
+        } else if (_slAge >= 24 * 60 * 60 * 1000) {
+          localStorage.removeItem('ftv-card-sl-inprogress-v1');
+        }
+      }
+    } catch(_) {}
     this._slideshowMaxUploadsBaseline = 10;  // server-confirmed value; used to detect changes in Apply
     this._slideshowUploading = false;
     this._overridePanelOpen = false;
@@ -853,6 +871,150 @@ class FrameTVArtCard extends HTMLElement {
     return `box-shadow: inset 0 0 0 ${thick}px ${cssColor};`;
   }
 
+  // Modal-scale matte preview uses thicker borders so the effect is clearly
+  // visible on the larger image inside the dblclick preview modal.
+  _matteCssForModal(matteId) {
+    if (!matteId || matteId === 'none' || matteId === '__default__') return '';
+    const us = matteId.indexOf('_');
+    if (us < 0) return '';
+    const type = matteId.substring(0, us);
+    const color = matteId.substring(us + 1);
+    const colorMap = {
+      polar: '#f5f5f0', neutral: '#d8d2c4', apricot: '#e8c8a0', warm: '#c8a878',
+      cotton: '#ede4d3', sand: '#c8b294', mint: '#d4e8d4', moss: '#a8b89c',
+      lavender: '#d8d0e8', burgundy: '#7a2a3a', flamingo: '#e8a8a8', sky: '#b8d4e8'
+    };
+    const thickMap = {
+      shadowbox: 36, modern: 14, flexible: 24, panoramic: 26,
+      triptych: 26, mix: 22, squares: 28
+    };
+    const cssColor = colorMap[color] || '#c8b294';
+    const thick = thickMap[type] || 22;
+    return `box-shadow: inset 0 0 0 ${thick}px ${cssColor};`;
+  }
+
+  // ── In-progress autosave (mirror of web UI) ────────────────────────────────
+  _saveSlideshowInProgress() {
+    if (this._slInProgressTimer) clearTimeout(this._slInProgressTimer);
+    this._slInProgressTimer = setTimeout(() => {
+      try {
+        localStorage.setItem('ftv-card-sl-inprogress-v1', JSON.stringify({
+          selected: [...this._slideshowSelected],
+          maxUploads: this._slideshowMaxUploads,
+          ts: Date.now(),
+        }));
+      } catch(_) {}
+    }, 350);
+  }
+  _clearSlideshowInProgress() {
+    try { localStorage.removeItem('ftv-card-sl-inprogress-v1'); } catch(_) {}
+    if (this._slInProgressTimer) { clearTimeout(this._slInProgressTimer); this._slInProgressTimer = null; }
+  }
+
+  // ── Large preview modal (dblclick a slideshow thumbnail) ───────────────────
+  _closeSlideshowModal() {
+    if (this._slModalEl) {
+      this._slModalEl.remove();
+      this._slModalEl = null;
+    }
+    if (this._slModalEscHandler) {
+      document.removeEventListener('keydown', this._slModalEscHandler);
+      this._slModalEscHandler = null;
+    }
+  }
+  _openSlideshowModal(img) {
+    if (!img || !img.path) return;
+    this._closeSlideshowModal();
+    const basePath = this._getBaseImagePath();
+    const fullUrl = `${basePath}/${encodeURIComponent(img.folder)}/${encodeURIComponent(img.file)}`;
+    const isSel = this._slideshowSelected.has(img.path);
+    const curMatte = (this._slideshowMattes && this._slideshowMattes[img.path]) || '';
+    const matteOptsHtml = this._matteOptionList().map(m => {
+      let label;
+      if (m === '__default__') label = 'use global default';
+      else if (m === 'none') label = 'none';
+      else label = m;
+      const val = (m === '__default__') ? '__default__' : m;
+      const sel = (val === curMatte || (!curMatte && m === 'none')) ? ' selected' : '';
+      return `<option value="${this._escapeHtml(val)}"${sel}>${this._escapeHtml(label)}</option>`;
+    }).join('');
+    const overlay = document.createElement('div');
+    overlay.className = 'ftv-modal-overlay';
+    overlay.innerHTML = `
+      <div class="ftv-modal-content" role="dialog" aria-label="Image preview">
+        <button class="ftv-modal-close" type="button" title="Close (Esc)">&times;</button>
+        <div class="ftv-modal-img-wrap">
+          <div class="ftv-modal-img-frame">
+            <img src="${fullUrl}" alt="${this._escapeHtml(img.title || img.file)}" onerror="this.style.opacity='0.3'">
+            <div class="ftv-modal-matte-preview" style="${this._matteCssForModal(curMatte)}"></div>
+          </div>
+        </div>
+        <div class="ftv-modal-meta">
+          <strong>${this._escapeHtml(img.title || img.file)}</strong>${img.artist ? ' &middot; ' + this._escapeHtml(img.artist) : ''}${img.year ? ' &middot; ' + this._escapeHtml(String(img.year)) : ''}
+        </div>
+        <div class="ftv-modal-controls">
+          <label for="ftv-modal-matte">Matte:</label>
+          <select id="ftv-modal-matte">${matteOptsHtml}</select>
+          <button type="button" class="ftv-modal-toggle${isSel ? ' selected' : ''}">${isSel ? '\u2713 Selected' : 'Add to selection'}</button>
+        </div>
+      </div>`;
+    // Attach to document.body so it sits above the HA dashboard regardless of
+    // the card's stacking context.
+    document.body.appendChild(overlay);
+    this._slModalEl = overlay;
+
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) this._closeSlideshowModal();
+    });
+    overlay.querySelector('.ftv-modal-close').addEventListener('click', () => this._closeSlideshowModal());
+    this._slModalEscHandler = (e) => { if (e.key === 'Escape') this._closeSlideshowModal(); };
+    document.addEventListener('keydown', this._slModalEscHandler);
+
+    const matteSel = overlay.querySelector('#ftv-modal-matte');
+    matteSel.addEventListener('change', () => {
+      const val = matteSel.value || '';
+      if (!this._slideshowMattes) this._slideshowMattes = {};
+      if (val === '__default__') delete this._slideshowMattes[img.path];
+      else this._slideshowMattes[img.path] = val;
+      if (this._hass) {
+        this._hass.callService('mqtt', 'publish', {
+          topic: 'frame_tv/cmd/slideshow/matte/set',
+          payload: JSON.stringify({ path: img.path, matte: (val || '__default__'), req_id: 'matte-' + Date.now() }),
+          qos: 1,
+        }).catch(() => {});
+      }
+      const $preview = overlay.querySelector('.ftv-modal-matte-preview');
+      if ($preview) $preview.setAttribute('style', this._matteCssForModal(this._slideshowMattes[img.path] || ''));
+      if (this._overridePanelOpen) this._renderOverrideGrid();
+    });
+
+    const toggleBtn = overlay.querySelector('.ftv-modal-toggle');
+    toggleBtn.addEventListener('click', () => {
+      if (this._slideshowUploading) return;
+      if (this._slideshowPreviewMode) {
+        this._slideshowPreviewMode = false;
+        const shufBtn = this.querySelector('#ftv-op-shuffle');
+        if (shufBtn) shufBtn.textContent = 'Shuffle';
+      }
+      if (this._slideshowSelected.has(img.path)) {
+        this._slideshowSelected.delete(img.path);
+        toggleBtn.classList.remove('selected');
+        toggleBtn.textContent = 'Add to selection';
+      } else {
+        this._slideshowSelected.add(img.path);
+        toggleBtn.classList.add('selected');
+        toggleBtn.textContent = '\u2713 Selected';
+        const newCount = this._slideshowSelected.size;
+        if (newCount > 0) {
+          this._slideshowMaxUploads = newCount;
+          const opMaxEl = this.querySelector('#ftv-op-max');
+          if (opMaxEl && !opMaxEl.dataset.dirty) opMaxEl.value = newCount;
+        }
+      }
+      if (this._overridePanelOpen) this._renderOverrideGrid();
+    });
+  }
+
   _formatInline(text) {
     // Escape first to prevent injection, then apply simple inline formatting
     let s = this._escapeHtml(text);
@@ -1597,6 +1759,70 @@ class FrameTVArtCard extends HTMLElement {
             position: absolute; left: 0; right: 0; top: 0; bottom: 0;
             pointer-events: none;
           }
+          /* Large preview modal opened on dblclick of any slideshow thumbnail. */
+          .ftv-modal-overlay {
+            position: fixed; inset: 0; z-index: 100000;
+            background: rgba(0,0,0,0.88);
+            display: flex; align-items: center; justify-content: center;
+            padding: 24px;
+          }
+          .ftv-modal-content {
+            position: relative;
+            max-width: 95vw; max-height: 95vh;
+            display: flex; flex-direction: column; gap: 12px;
+            background: #1a1614; border: 1px solid #3a2f2a; border-radius: 10px;
+            padding: 18px 18px 14px;
+            box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+          }
+          .ftv-modal-close {
+            position: absolute; top: 8px; right: 12px;
+            background: transparent; border: none; color: #b6aba4;
+            font-size: 24px; cursor: pointer; line-height: 1;
+            padding: 4px 8px; border-radius: 4px;
+          }
+          .ftv-modal-close:hover { color: #fff; background: rgba(255,255,255,0.08); }
+          .ftv-modal-img-wrap {
+            position: relative;
+            flex: 1; min-height: 0;
+            display: flex; align-items: center; justify-content: center;
+          }
+          .ftv-modal-img-frame {
+            position: relative;
+            max-width: 100%; max-height: 78vh;
+            display: inline-flex;
+          }
+          .ftv-modal-img-frame img {
+            max-width: 100%; max-height: 78vh;
+            display: block; object-fit: contain;
+          }
+          .ftv-modal-matte-preview { position: absolute; inset: 0; pointer-events: none; }
+          .ftv-modal-meta {
+            color: #b6aba4; font-size: 12px; text-align: center;
+            max-width: 80vw;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+          }
+          .ftv-modal-meta strong { color: #e6dcd4; }
+          .ftv-modal-controls {
+            display: flex; gap: 14px; align-items: center; justify-content: center;
+            flex-wrap: wrap;
+          }
+          .ftv-modal-controls label { font-size: 12px; color: #b6aba4; }
+          .ftv-modal-controls select {
+            font-size: 13px; padding: 5px 9px;
+            background: #0d0c0b; color: #e6dcd4;
+            border: 1px solid #4a3d37; border-radius: 5px;
+            min-width: 200px;
+          }
+          .ftv-modal-controls .ftv-modal-toggle {
+            font-size: 12px; font-weight: 600;
+            padding: 6px 14px; cursor: pointer;
+            background: rgba(255,255,255,0.07); border: 1px solid #3a2f2a;
+            color: #b6aba4; border-radius: 5px;
+          }
+          .ftv-modal-controls .ftv-modal-toggle.selected {
+            background: rgba(47,127,191,0.25); border-color: #2f7fbf; color: #6ab0f5;
+          }
+          .ftv-modal-controls .ftv-modal-toggle:hover { border-color: #6ab0f5; color: #fff; }
           .ftv-op-hint { padding: 16px 14px; font-size: 0.85em; color: rgba(255,255,255,0.4); text-align: center; }
           .ftv-coll-row { margin-bottom: 0; }
           .ftv-coll-header {
@@ -2014,6 +2240,8 @@ class FrameTVArtCard extends HTMLElement {
         if (shufBtn) shufBtn.textContent = 'Shuffle';
         const baseline = this._slideshowMode === 'override' ? this._slideshowOverridePaths : this._slideshowCurrentPaths;
         this._slideshowSelected = new Set(baseline);
+        // Reset wipes in-progress autosave too — selection now matches baseline.
+        this._clearSlideshowInProgress();
         this._renderOverrideGrid();
       });
     }
@@ -2103,6 +2331,9 @@ class FrameTVArtCard extends HTMLElement {
           payload: JSON.stringify(payload),
           qos: 1, retain: false,
         }).catch(() => {});
+        // Selection has been committed — drop the in-progress autosave so a
+        // refresh doesn't re-flag this as "Modified" relative to the new baseline.
+        this._clearSlideshowInProgress();
         // Safety fallback only — MQTT response cancels this via _updateOverrideCounter
         this._applyRestoreTimer = setTimeout(() => {
           this._applyRestoreTimer = null;
@@ -2638,6 +2869,25 @@ class FrameTVArtCard extends HTMLElement {
       });
     }
 
+    // Double-click any thumbnail → near-fullscreen preview modal with a
+    // higher-fidelity matte simulation and inline matte/selection controls.
+    grid.querySelectorAll('.ftv-op-thumb').forEach(el => {
+      el.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const path = el.dataset.path;
+        if (!path) return;
+        let img = this._slideshowAvailable.find(i => i.path === path);
+        if (!img) {
+          const ls = path.lastIndexOf('/');
+          const folder = ls > 0 ? path.substring(0, ls) : '';
+          const file = ls >= 0 ? path.substring(ls + 1) : path;
+          img = { path, folder, file, title: '', artist: folder, year: '' };
+        }
+        this._openSlideshowModal(img);
+      });
+    });
+
     // Per-image matte (passepartout) picker — always enabled, even when locked,
     // because change_matte is a cheap re-mat with no upload.
     grid.querySelectorAll('select.ftv-op-matte').forEach(sel => {
@@ -2790,6 +3040,8 @@ class FrameTVArtCard extends HTMLElement {
       }
     }
     this._renderPresets();
+    // Autosave in-progress selection so a frontend refresh doesn't lose work.
+    this._saveSlideshowInProgress();
   }
 
   _presetsKey() { return 'ftv-sl-presets'; } // unused, kept for reference
