@@ -75,7 +75,7 @@ image_path: /local/images/frame_tv_art_collections
 web_ui_url: http://samsung-tv-art.local:8080
 ```
 
-The `web_ui_url` is the address of the standalone web UI (typically port `8080` on the host running the `samsung-tv-art` container). Clicking the cog in the card header opens that URL in a new tab — all slideshow editing, matte selection, presets, and backend settings live there. If `web_ui_url` is empty the cog is inert (and the tooltip says so).
+The `web_ui_url` is the address of the standalone web UI (typically port `8080` on the host running the `samsung-tv-art` container). It defaults to `http://samsung-tv-art.local:8080` (the mDNS hostname the container advertises) so most installs work without setting it. Override it if your container is reachable at a different host/port. Clicking the cog in the card header opens that URL in a new tab \u2014 all slideshow editing, matte selection, presets, and backend settings live there.
 
 > **HTTPS Home Assistant + HTTP uploader:** opening the URL in a new tab works fine (top-level navigation is allowed cross-scheme), but the browser may show a "Not Secure" warning on the uploader tab. If you'd prefer no warning, run the uploader behind a reverse proxy (Caddy add-on, NGINX Proxy Manager add-on, Traefik, etc.) and point `web_ui_url` at the HTTPS host.
 

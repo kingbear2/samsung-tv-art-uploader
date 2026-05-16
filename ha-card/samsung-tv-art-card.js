@@ -133,9 +133,10 @@ class FrameTVArtCard extends HTMLElement {
       standby_image_path: config.standby_image_path,
       preload_thumbnails: false,
       // URL of the standalone Samsung TV Art Uploader web UI. Clicking the cog
-      // opens this URL in a new tab. Required for the cog to do anything.
-      // Example: http://samsung-tv-art.local:8080 or http://<docker-host>:8080
-      web_ui_url: config.web_ui_url || '',
+      // opens this URL in a new tab. Defaults to the mDNS hostname the
+      // container advertises; override if your container is reachable at a
+      // different host/port (e.g. http://<docker-host>:8080).
+      web_ui_url: config.web_ui_url || 'http://samsung-tv-art.local:8080',
       ...config
     };
     // don't eagerly build standby path here; compute based on protocol when needed
