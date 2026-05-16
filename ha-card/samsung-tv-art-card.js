@@ -27,7 +27,6 @@ class FrameTVArtCard extends HTMLElement {
     this._refreshProgressMsg = '';
     this._refreshProgressLog = [];
     this._docClickHandler = null;
-    this._pollAppliedTimer = null;
     this._staleClearTimer = null;
 
     // Restore progress log if page was refreshed mid-sync (max 15 min TTL)
@@ -152,7 +151,7 @@ class FrameTVArtCard extends HTMLElement {
     const syncStatus = (this._syncAck && this._syncAck.status) || '';
     const artAttrs = this._getAttrs(this._config.selected_artwork_file_entity);
     const inArtMode = artAttrs ? String(artAttrs.in_art_mode) : 'true';
-    return `${file}|${selected}|${options}|${ackStatus}|${ackMessage}|${ackReqId}|${syncStatus}|${this._refreshInProgress}|${this._slideshowMode}|${this._overridePanelOpen}|${this._slideshowSeq}|${this._slideshowUpdateMins}|${this._slideshowMaxUploads}|${this._slideshowUploading}|${inArtMode}`;
+    return `${file}|${selected}|${options}|${ackStatus}|${ackMessage}|${ackReqId}|${syncStatus}|${this._refreshInProgress}|${this._slideshowMode}|${this._slideshowSeq}|${this._slideshowUpdateMins}|${this._slideshowMaxUploads}|${this._slideshowUploading}|${inArtMode}`;
   }
 
   disconnectedCallback() {
@@ -169,14 +168,10 @@ class FrameTVArtCard extends HTMLElement {
     this._refreshCmdUnsubscribe = null;
     this._syncAckUnsubscribe = null;
     this._refreshSubscribing = false;
-    // Clean up document-level listener and polling timer
+    // Clean up document-level listener
     if (this._docClickHandler) {
       document.removeEventListener('click', this._docClickHandler, { capture: true });
       this._docClickHandler = null;
-    }
-    if (this._pollAppliedTimer) {
-      clearTimeout(this._pollAppliedTimer);
-      this._pollAppliedTimer = null;
     }
     if (this._radiusObserver) {
       this._radiusObserver.disconnect();
@@ -308,9 +303,6 @@ class FrameTVArtCard extends HTMLElement {
           this._refreshProgressLog = [];
           try { sessionStorage.removeItem('ftvHaRefreshLog'); sessionStorage.removeItem('ftvHaRefreshActive'); } catch(_) {}
           this._lastStateHash = '';
-          // Stop spinner
-          const _btnR = this.querySelector('#ftv-refresh');
-          if (_btnR) { _btnR.classList.remove('spinning'); if (!this._isStandbyLike) _btnR.disabled = false; }
           const _btnC = this.querySelector('#ftv-clear');
           if (_btnC && !this._isStandbyLike) _btnC.disabled = false;
           this._render();
@@ -1173,7 +1165,6 @@ class FrameTVArtCard extends HTMLElement {
       </ha-card>
     `;
     const gear = this.querySelector('#ftv-gear');
-    const btnRefresh = this.querySelector('#ftv-refresh');
     const statusEl = this.querySelector('#ftv-status');
     const setStatus = (msg = '', timeoutMs = 6000) => {
       this._statusMessage = msg || '';
@@ -1252,10 +1243,6 @@ class FrameTVArtCard extends HTMLElement {
             applyBtn.disabled = applyDisabled;
             applyBtn.style.opacity = applyDisabled ? '0.5' : '';
           }
-          if (btnRefresh && !this._refreshInProgress) {
-            btnRefresh.disabled = changed;
-            btnRefresh.style.opacity = changed ? '0.5' : '';
-          }
           return;
         }
         const wasSelected = this._currentSelected.includes(val);
@@ -1289,10 +1276,6 @@ class FrameTVArtCard extends HTMLElement {
           applyBtn.disabled = applyDisabled;
           applyBtn.style.opacity = applyDisabled ? '0.5' : '';
         }
-        if (btnRefresh && !this._refreshInProgress) {
-          btnRefresh.disabled = changed;
-          btnRefresh.style.opacity = changed ? '0.5' : '';
-        }
       });
     });
 
@@ -1313,10 +1296,6 @@ class FrameTVArtCard extends HTMLElement {
         applyBtn.style.display = changed ? 'flex' : 'none';
         applyBtn.disabled = applyDisabled;
         applyBtn.style.opacity = applyDisabled ? '0.5' : '';
-        if (btnRefresh && !this._refreshInProgress) {
-          btnRefresh.disabled = changed;
-          btnRefresh.style.opacity = changed ? '0.5' : '';
-        }
       }
       this.querySelectorAll('.ftv-option.selected').forEach(o => o.classList.remove('selected'));
     });
@@ -1329,10 +1308,6 @@ class FrameTVArtCard extends HTMLElement {
       applyBtn.style.display = changed ? 'flex' : 'none';
       applyBtn.disabled = applyDisabled;
       applyBtn.style.opacity = applyDisabled ? '0.5' : '';
-      if (btnRefresh && !this._refreshInProgress) {
-        btnRefresh.disabled = changed;
-        btnRefresh.style.opacity = changed ? '0.5' : '';
-      }
       applyBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         if (!this._hass) return;
@@ -1350,15 +1325,6 @@ class FrameTVArtCard extends HTMLElement {
         }, 10000);
         applyBtn.style.display = 'none';
         applyBtn.disabled = true;
-        if (btnRefresh) { btnRefresh.disabled = true; btnRefresh.style.opacity = '0.5'; }
-        // Re-enable refresh once the backend ack arrives (via _refreshInProgress clearing)
-        // or after a safety timeout
-        setTimeout(() => {
-          if (btnRefresh && !this._refreshInProgress && !this._isStandbyLike) {
-            btnRefresh.disabled = false;
-            btnRefresh.style.opacity = '';
-          }
-        }, 10000);
       });
     }
     } // end if (trigger && dropdown)
