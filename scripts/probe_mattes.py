@@ -3,19 +3,21 @@
 which ones the TV rejects with error -7.
 
 Designed to run **inside the container** so it reuses the existing
-/app/token_file.txt and writes to /data/matte_blocklist.json (which serve.py
+/data/token_file.txt and writes to /data/matte_blocklist.json (which serve.py
 exposes at /api/matte_blocklist for the web UI to consume).
 
 Typical usage (from your workstation):
 
     ssh <docker-host> 'docker exec samsung-tv-art \
-        python3 /app/scripts/probe_mattes.py --content-id MY_F2385'
+        python3 /app/scripts/probe_mattes.py --content-id MY_F2385 MY_F2414'
 
 Notes
-- A real content_id is required. Pick any one of your uploaded images; the
-  script captures the current matte first and restores it at the end (best
-  effort). Each combination is briefly displayed on the TV during probing,
-  so it'll flicker for a few minutes — don't run during movie night.
+- Pass MORE THAN ONE content_id when possible — ideally one landscape and one
+  portrait image. A combo is only flagged bad when every probed image rejects
+  it, which filters out aspect-ratio-sensitive combos that aren't truly broken.
+- The script captures each image's current matte first and restores it at the
+  end (best effort). Each combination is briefly displayed on the TV during
+  probing, so it'll flicker for a few minutes — don't run during movie night.
 - Combinations the TV accepts produce an "ok" log line. Rejections come back
   as `change_matte request failed with error number -7` and get recorded.
 - Output JSON shape:
@@ -99,59 +101,83 @@ async def probe(args):
     if args.colors:
         colors = args.colors
 
-    print(f'Probing {len(types)} types × {len(colors)} colors on content_id={args.content_id} '
-          f'(≈ {len(types) * len(colors) * args.delay:.0f}s of TV flicker)…')
+    content_ids = args.content_id if isinstance(args.content_id, list) else [args.content_id]
+    total_calls = len(content_ids) * len(types) * max(len(colors), 1)
+    print(f'Probing {len(types)} types × {len(colors)} colors against {len(content_ids)} image(s): '
+          f'{content_ids}')
+    print(f'  (≈ {total_calls * args.delay:.0f}s of TV flicker, plus retries)')
 
-    original = await _current_matte(tv, args.content_id)
-    print(f'Original matte for {args.content_id}: {original}')
+    async def _try_combo(cid, combo):
+        """Return (ok, last_exc). Retries -7 failures up to args.retries extra times."""
+        last_exc = None
+        attempts = args.retries + 1
+        for attempt in range(attempts):
+            try:
+                await tv.change_matte(cid, combo, portrait_matte=combo)
+                return True, None
+            except Exception as e:
+                last_exc = e
+                if not _is_error_minus_7(e):
+                    return False, e  # non -7 errors: don't waste retries
+                if attempt < attempts - 1:
+                    await asyncio.sleep(args.delay)  # back off and retry
+        return False, last_exc
+
+    # Track per-combo rejection counts across all probed images.
+    # A combo is "bad" only when EVERY image rejected it with -7.
+    combos = []  # list of (type, color_or_None, combo_string)
+    for t in types:
+        if t == 'none':
+            combos.append(('none', None, 'none'))
+        else:
+            for c in colors:
+                combos.append((t, c, f'{t}_{c}'))
+
+    reject_counts = {combo: 0 for _, _, combo in combos}
+    other_errors = {combo: None for _, _, combo in combos}
+
+    originals = {}
+    for cid in content_ids:
+        originals[cid] = await _current_matte(tv, cid)
+        print(f'\n=== {cid} (original matte: {originals[cid]}) ===')
+        for _, _, combo in combos:
+            ok, exc = await _try_combo(cid, combo)
+            if ok:
+                print(f'  ok    {combo}')
+            elif exc is not None and _is_error_minus_7(exc):
+                reject_counts[combo] += 1
+                print(f'  BAD   {combo}  (rejected {reject_counts[combo]}/{len(content_ids)} images so far)')
+            else:
+                other_errors[combo] = str(exc)
+                print(f'  ERR   {combo}  ({exc})')
+            await asyncio.sleep(args.delay)
 
     bad_combos = []
     good_combos = []
+    for t, c, combo in combos:
+        if reject_counts[combo] >= len(content_ids):
+            bad_combos.append([t, c])
+        else:
+            good_combos.append([t, c])
 
-    for t in types:
-        if t == 'none':
-            # 'none' has no color — test it once outside the color loop
-            try:
-                await tv.change_matte(args.content_id, 'none', portrait_matte='none')
-                good_combos.append(['none', None])
-                print(f'  ok    none')
-            except Exception as e:
-                if _is_error_minus_7(e):
-                    bad_combos.append(['none', None])
-                    print(f'  BAD   none  ({e})')
-                else:
-                    print(f'  ERR   none  ({e})')
-            await asyncio.sleep(args.delay)
-            continue
-        for c in colors:
-            combo = f'{t}_{c}'
-            try:
-                await tv.change_matte(args.content_id, combo, portrait_matte=combo)
-                good_combos.append([t, c])
-                print(f'  ok    {combo}')
-            except Exception as e:
-                if _is_error_minus_7(e):
-                    bad_combos.append([t, c])
-                    print(f'  BAD   {combo}')
-                else:
-                    print(f'  ERR   {combo}  ({e})')
-            await asyncio.sleep(args.delay)
-
-    # Restore
-    try:
-        await tv.change_matte(args.content_id, original, portrait_matte=original)
-        print(f'Restored original matte: {original}')
-    except Exception as e:
-        print(f'WARN: could not restore original matte {original}: {e}', file=sys.stderr)
+    # Restore originals
+    for cid, original in originals.items():
+        try:
+            await tv.change_matte(cid, original, portrait_matte=original)
+            print(f'Restored original matte for {cid}: {original}')
+        except Exception as e:
+            print(f'WARN: could not restore original matte {original} for {cid}: {e}', file=sys.stderr)
 
     out = {
-        'probed_at':  datetime.now(timezone.utc).isoformat(timespec='seconds'),
-        'content_id': args.content_id,
-        'tv_types':   types,
-        'tv_colors':  colors,
-        'good_count': len(good_combos),
-        'bad_count':  len(bad_combos),
-        'bad_combos': bad_combos,
+        'probed_at':   datetime.now(timezone.utc).isoformat(timespec='seconds'),
+        'content_ids': content_ids,
+        'tv_types':    types,
+        'tv_colors':   colors,
+        'retries':     args.retries,
+        'delay':       args.delay,
+        'good_count':  len(good_combos),
+        'bad_count':   len(bad_combos),
+        'bad_combos':  bad_combos,
     }
     os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)
     with open(args.output, 'w', encoding='utf-8') as f:
@@ -169,14 +195,19 @@ def main():
     p.add_argument('--ip', default=os.environ.get('SAMSUNG_TV_ART_TV_IP'),
                    help='TV IP (defaults to $SAMSUNG_TV_ART_TV_IP)')
     p.add_argument('--port', type=int, default=int(os.environ.get('SAMSUNG_TV_ART_PORT', '8002')))
-    p.add_argument('--token-file', default='/app/token_file.txt',
-                   help='Token file path (default: /app/token_file.txt — container path)')
-    p.add_argument('--content-id', required=True,
-                   help='An uploaded image content_id to probe against (e.g. MY_F2385)')
+    p.add_argument('--token-file', default='/data/token_file.txt',
+                   help='Token file path (default: /data/token_file.txt — container path)')
+    p.add_argument('--content-id', required=True, nargs='+',
+                   help='One or more uploaded content_ids to probe against. A combo is only '
+                        'flagged bad when EVERY image rejects it (filters out aspect-ratio '
+                        'sensitive combos). Mix portrait and landscape for best results.')
     p.add_argument('--output', default='/data/matte_blocklist.json',
                    help='Where to write the blocklist JSON (default: /data/matte_blocklist.json)')
-    p.add_argument('--delay', type=float, default=0.8,
-                   help='Seconds between probes — too short and the TV may queue or 429 (default: 0.8)')
+    p.add_argument('--delay', type=float, default=2.0,
+                   help='Seconds between probes — too short and the TV may queue and return -7 '
+                        'spuriously (default: 2.0)')
+    p.add_argument('--retries', type=int, default=2,
+                   help='Re-test apparent failures N more times before recording them (default: 2)')
     p.add_argument('--types', nargs='*', help='Override matte_types list (skip get_matte_list)')
     p.add_argument('--colors', nargs='*', help='Override matte_colors list')
     args = p.parse_args()
