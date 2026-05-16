@@ -205,9 +205,9 @@ def main():
                         'sensitive combos). Mix portrait and landscape for best results.')
     p.add_argument('--output', default='/data/matte_blocklist.json',
                    help='Where to write the blocklist JSON (default: /data/matte_blocklist.json)')
-    p.add_argument('--delay', type=float, default=2.0,
-                   help='Seconds between probes — too short and the TV may queue and return -7 '
-                        'spuriously (default: 2.0)')
+    p.add_argument('--delay', type=float, default=0.8,
+                   help='Seconds between probes (default: 0.8). Bump higher only if you see '
+                        'spurious -7 errors that disappear on retry.')
     p.add_argument('--retries', type=int, default=2,
                    help='Re-test apparent failures N more times before recording them (default: 2)')
     p.add_argument('--types', nargs='*', help='Override matte_types list (skip get_matte_list)')
