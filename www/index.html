@@ -197,6 +197,21 @@
       transition: background 0.15s, border-color 0.15s;
     }
     .sl-thumb.selected .sl-thumb-check { background: #2f7fbf; border-color: #2f7fbf; }
+    /* Selected-overview thumbs are draggable to control playback order */
+    .sl-thumb.sl-draggable { cursor: grab; }
+    .sl-thumb.sl-draggable:active { cursor: grabbing; }
+    .sl-thumb.sl-dragging { opacity: 0.4; }
+    .sl-thumb.sl-drop-before { box-shadow: -3px 0 0 0 #6ab0f5; }
+    .sl-thumb.sl-drop-after  { box-shadow:  3px 0 0 0 #6ab0f5; }
+    .sl-thumb-ord {
+      position: absolute; top: 4px; left: 4px;
+      min-width: 22px; height: 22px; padding: 0 6px;
+      border-radius: 11px;
+      background: rgba(0,0,0,0.65); border: 2px solid #2f7fbf;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 700; color: #fff; line-height: 1;
+      pointer-events: none;
+    }
     /* Size button group */
     .sl-size-btns { display: flex; gap: 3px; }
     .sl-size-btn {
@@ -464,7 +479,7 @@
       </div>
       <div class="card-footer">
         <a class="bmc-link" href="https://buymeacoffee.com/kohlerryan" target="_blank" rel="noopener noreferrer">☕ Buy me a coffee</a>
-        <span class="version-tag">v0.3.1</span>
+        <span class="version-tag">v0.3.2</span>
       </div>
     </div>
   </div>
@@ -696,7 +711,9 @@
                   slideshowClearRefreshPending = false;
                   slideshowUserRefreshPending = false;
                   slideshowPostClear = false;
-                  const seed = slideshowCurrentPaths.filter(p => availPathSet.has(p));
+                  const refreshPaths = (slideshowMode === 'override' && slideshowOverridePaths.length)
+                    ? slideshowOverridePaths : slideshowCurrentPaths;
+                  const seed = refreshPaths.filter(p => availPathSet.has(p));
                   if (seed.length) slideshowSelected = new Set(seed);
                 } else if (slideshowSelected.size === 0) {
                   const paths = slideshowMode === 'override' ? slideshowOverridePaths : slideshowCurrentPaths;
@@ -1856,15 +1873,20 @@
     function updateGridLock() {
       // slideshowUserRefreshPending: user clicked Apply (collections) — reseed not yet started.
       // Keep the grid locked from that click until the post-reseed available arrives.
-      const locked = slideshowUploading || slideshowUserRefreshPending || (slideshowStandby && slideshowMode !== 'override');
+      const locked = slideshowUploading || slideshowUserRefreshPending || slideshowClearRefreshPending || (slideshowStandby && slideshowMode !== 'override');
       const $warn = document.getElementById('sl-uploading-warn');
       if ($warn) {
         $warn.style.display = locked ? '' : 'none';
-        $warn.textContent = slideshowUploading ? '\u26a0 Uploading \u2014 grid locked' : slideshowUserRefreshPending ? '\u26a0 Applying \u2014 grid locked' : '\u26a0 Standby \u2014 grid locked';
+        $warn.textContent = slideshowUploading ? '\u26a0 Uploading \u2014 grid locked' : (slideshowUserRefreshPending || slideshowClearRefreshPending) ? '\u26a0 Applying \u2014 grid locked' : '\u26a0 Standby \u2014 grid locked';
       }
       if ($slGrid) { $slGrid.style.pointerEvents = locked ? 'none' : ''; $slGrid.style.opacity = locked ? '0.45' : ''; }
       if ($slOApply && locked && !slideshowPreviewMode) { $slOApply.disabled = true; $slOApply.style.opacity = 0.4; }
       if ($slOReset && locked) $slOReset.style.display = 'none';
+      const $shuf = document.getElementById('sl-preview-shuffle');
+      if ($shuf && !slideshowShuffling) {
+        $shuf.disabled = locked;
+        $shuf.style.opacity = locked ? 0.4 : '';
+      }
     }
 
     function markSlSettingsDirty() {
@@ -1906,9 +1928,12 @@
       }
       const $badge = document.getElementById('sl-mode-badge');
       if ($badge) {
-        if (differs) {
+        if (slideshowPreviewMode && differs) {
           $badge.textContent = '\u25CF Preview';
           $badge.style.color = '#d4920a';
+        } else if (differs) {
+          $badge.textContent = '\u25CF Modified';
+          $badge.style.color = '#6ab0e0';
         } else {
           $badge.textContent = '';
         }
@@ -1972,19 +1997,30 @@
       }
       const sortedKeys = [...collMap.keys()].sort((a, b) => a.localeCompare(b));
 
-      function thumbHtml(img) {
+      function thumbHtml(img, opts) {
+        opts = opts || {};
         const isSel = slideshowSelected.has(img.path);
         const thumbUrl = `${location.origin}/app/frame_tv_art_collections/${encodeURIComponent(img.folder)}/${encodeURIComponent(img.file)}`;
-        return `<div class="sl-thumb${isSel ? ' selected' : ''}" data-path="${escapeHtml(img.path)}">
+        const draggableAttr = opts.draggable ? ' draggable="true"' : '';
+        const draggableCls = opts.draggable ? ' sl-draggable' : '';
+        const ordHtml = (opts.ordinal != null) ? `<div class="sl-thumb-ord">${opts.ordinal}</div>` : '';
+        return `<div class="sl-thumb${isSel ? ' selected' : ''}${draggableCls}" data-path="${escapeHtml(img.path)}"${draggableAttr}>
           <img data-src="${thumbUrl}" alt="${escapeHtml(img.title || img.file)}" onerror="this.style.display='none'">
           <div class="sl-thumb-check">${isSel ? '\u2713' : ''}</div>
+          ${ordHtml}
         </div>`;
       }
 
-      // Build "Selected" summary section (all selected images flat, no pagination needed).
-      const selectedImgs = slideshowAvailable.filter(img => slideshowSelected.has(img.path));
+      // Build "Selected" summary section in user-controlled order (insertion order of slideshowSelected).
+      // A Set in JS preserves insertion order, so iterating it yields the order the user picked /
+      // most recently rearranged via drag-and-drop. This order is what gets uploaded.
+      const availPathMap = new Map(slideshowAvailable.map(img => [img.path, img]));
+      const selectedImgs = [];
       for (const path of slideshowSelected) {
-        if (!availPathSet.has(path)) {
+        const img = availPathMap.get(path);
+        if (img) {
+          selectedImgs.push(img);
+        } else {
           const lastSlash = path.lastIndexOf('/');
           const folder = lastSlash > 0 ? path.substring(0, lastSlash) : '';
           const file = lastSlash >= 0 ? path.substring(lastSlash + 1) : path;
@@ -2000,13 +2036,14 @@
       const _savedPresetsScroll = _presetsScrollDiv ? _presetsScrollDiv.scrollTop : 0;
 
       let html = '';
-      // Selected overview at top
+      // Selected overview at top — draggable to control playback order
       if (selectedImgs.length) {
+        const selThumbsHtml = selectedImgs.map((img, i) => thumbHtml(img, { draggable: true, ordinal: i + 1 })).join('');
         html += `<div class="sl-coll-row">
           <div class="sl-coll-header" data-body="sl-cc-sel">
-            Selected (${selectedImgs.length})
+            Selected (${selectedImgs.length}) <span class="sl-coll-page-lbl" style="margin-left:8px; min-width:0;">drag to reorder</span>
           </div>
-          <div class="sl-coll-body" id="sl-cc-sel">${selectedImgs.map(thumbHtml).join('')}</div>
+          <div class="sl-coll-body" id="sl-cc-sel">${selThumbsHtml}</div>
         </div>`;
       }
       // Per-collection carousels
@@ -2110,6 +2147,71 @@
           renderSlideshowGrid();
         });
       });
+
+      // Drag-and-drop reordering for the Selected overview thumbs.
+      // The order of slideshowSelected (a Set, insertion-ordered) is what gets
+      // uploaded — important for sequential playback. We reorder by rebuilding
+      // the Set from a permuted array.
+      const $selBody = $slGrid.querySelector('#sl-cc-sel');
+      if ($selBody) {
+        let dragSrcPath = null;
+        const clearDropMarkers = () => {
+          $selBody.querySelectorAll('.sl-drop-before, .sl-drop-after').forEach(n => {
+            n.classList.remove('sl-drop-before');
+            n.classList.remove('sl-drop-after');
+          });
+        };
+        $selBody.querySelectorAll('.sl-thumb.sl-draggable').forEach(el => {
+          el.addEventListener('dragstart', (e) => {
+            if (slideshowUploading) { e.preventDefault(); return; }
+            dragSrcPath = el.dataset.path;
+            el.classList.add('sl-dragging');
+            try {
+              e.dataTransfer.effectAllowed = 'move';
+              // Required by Firefox to actually start the drag
+              e.dataTransfer.setData('text/plain', dragSrcPath);
+            } catch (_) { /* noop */ }
+          });
+          el.addEventListener('dragend', () => {
+            el.classList.remove('sl-dragging');
+            clearDropMarkers();
+            dragSrcPath = null;
+          });
+          el.addEventListener('dragover', (e) => {
+            if (!dragSrcPath || el.dataset.path === dragSrcPath) return;
+            e.preventDefault();
+            try { e.dataTransfer.dropEffect = 'move'; } catch (_) {}
+            const rect = el.getBoundingClientRect();
+            const before = (e.clientX - rect.left) < rect.width / 2;
+            clearDropMarkers();
+            el.classList.add(before ? 'sl-drop-before' : 'sl-drop-after');
+          });
+          el.addEventListener('dragleave', () => {
+            el.classList.remove('sl-drop-before');
+            el.classList.remove('sl-drop-after');
+          });
+          el.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const targetPath = el.dataset.path;
+            const srcPath = dragSrcPath;
+            clearDropMarkers();
+            if (!srcPath || !targetPath || srcPath === targetPath) return;
+            const rect = el.getBoundingClientRect();
+            const before = (e.clientX - rect.left) < rect.width / 2;
+            const order = [...slideshowSelected];
+            const fromIdx = order.indexOf(srcPath);
+            if (fromIdx === -1) return;
+            order.splice(fromIdx, 1);
+            let toIdx = order.indexOf(targetPath);
+            if (toIdx === -1) return;
+            if (!before) toIdx += 1;
+            order.splice(toIdx, 0, srcPath);
+            slideshowSelected = new Set(order);
+            renderSlideshowGrid();
+          });
+        });
+      }
     }
 
     if ($slType) $slType.addEventListener('change', () => { $slType.dataset.dirty = 'y'; markSlSettingsDirty(); });
@@ -2182,6 +2284,7 @@
     if ($slShuffle) {
       $slShuffle.onclick = () => {
         if (!client) return;
+        if (slideshowUploading || slideshowUserRefreshPending || slideshowClearRefreshPending) return;
         slideshowShuffling = true;
         $slShuffle.disabled = true;
         $slShuffle.textContent = 'Shuffling\u2026';

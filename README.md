@@ -12,7 +12,7 @@ Built on top of [NickWaterton/samsung-tv-ws-api](https://github.com/NickWaterton
 
 > **Upgrading from v0.1.x?** See the [v0.2.0 release notes](https://github.com/kohlerryan/samsung-tv-art-uploader/releases/tag/v0.2.0) for breaking changes and what's new.
 
-> **Upgrading from v0.2.x?** See the [v0.3.1 release notes](https://github.com/kohlerryan/samsung-tv-art-uploader/releases/tag/v0.3.1) for what's new.
+> **Upgrading from v0.2.x?** See the [v0.3.2 release notes](https://github.com/kohlerryan/samsung-tv-art-uploader/releases/tag/v0.3.2) for what's new.
 
 ## Features
 
@@ -23,6 +23,7 @@ Built on top of [NickWaterton/samsung-tv-ws-api](https://github.com/NickWaterton
 - Built-in web UI (port 8080) for collection selection, settings, and manual refresh
 - **Saved Selections** — name and save any image set as a preset; synced across all clients via retained MQTT; auto-generates thematic defaults (Landscapes, Marine, Impressionism, etc.) on first start
 - **Per-collection carousels** with S/M/L thumbnail size controls and a shuffle preview mode
+- **Drag-and-drop ordering** — reorder hand-picked images in the Selected overview to control sequential playback order; ordinal badges (1, 2, 3…) show the current order
 - [Home Assistant Lovelace card](https://github.com/kohlerryan/samsung-tv-art-card) with live progress display during refresh operations
 - mDNS advertisement (`samsung-tv-art.local`) via Avahi — requires `network_mode: host`, macvlan, or macvlan+bridge (see compose example)
 
@@ -320,7 +321,7 @@ When `SAMSUNG_TV_ART_LOCAL_WEB=true`, a web interface is available at `http://sa
 | ![Web UI Slideshow](assets/webui_slideshow_v0.3.0.png) | ![Web UI Mobile](assets/webui_mobile_now_showing_v0.2.2.png) |
 
 - **Collections** tab — select which collections are active and trigger a refresh
-- **Slideshow** tab — browse available images in per-collection carousels (S/M/L size), hand-pick a fixed set to pin to the TV, shuffle for a preview before committing, and manage named **Saved Selections** that sync across all clients via MQTT
+- **Slideshow** tab — browse available images in per-collection carousels (S/M/L size), hand-pick a fixed set to pin to the TV, **drag thumbnails in the Selected overview to control sequential playback order** (numbered badges show current order), shuffle for a preview before committing, and manage named **Saved Selections** that sync across all clients via MQTT. A small status badge above the controls indicates pending changes: **● Preview** (amber) when a Shuffle preview is loaded but not applied, **● Modified** (blue) when your selection differs from what's currently on the TV
 - **Settings** tab — adjust MQTT/TV connection settings without restarting the container; includes a **Preload thumbnails** toggle (off by default) that eagerly fetches all slideshow images instead of loading them as you scroll. Action buttons are automatically disabled (with an explanatory message) when the TV is not in Art Mode, and show in-progress text while a command is pending
 - **Now Showing metadata** — the artwork info section (artist, title, description) scrolls when content overflows; a soft fade at the bottom of the section indicates more content is available below
 

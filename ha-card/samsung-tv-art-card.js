@@ -1,5 +1,5 @@
 /**
- * Frame TV Art Card v0.3.0
+ * Frame TV Art Card v0.3.1
  */
 
 class FrameTVArtCard extends HTMLElement {
@@ -568,7 +568,9 @@ class FrameTVArtCard extends HTMLElement {
         this._slideshowClearRefreshPending = false;
         this._slideshowUserRefreshPending = false;
         this._slideshowPostClear = false;
-        const seed = this._slideshowCurrentPaths.filter(p => availPathSet.has(p));
+        const refreshPaths = (this._slideshowMode === 'override' && this._slideshowOverridePaths.length)
+          ? this._slideshowOverridePaths : this._slideshowCurrentPaths;
+        const seed = refreshPaths.filter(p => availPathSet.has(p));
         if (seed.length) this._slideshowSelected = new Set(seed);
       } else if (this._slideshowSelected.size === 0 && !this._slideshowPostClear) {
         const paths = this._slideshowMode === 'override' ? this._slideshowOverridePaths : this._slideshowCurrentPaths;
@@ -1365,25 +1367,29 @@ class FrameTVArtCard extends HTMLElement {
             display: inline-flex;
             align-items: center;
             gap: 5px;
+            margin-left: 10px;
             padding: 3px 9px;
             border-radius: 12px;
-            font-size: 0.75em;
+            font-size: 0.85em;
             font-weight: 600;
+            letter-spacing: 0.04em;
+            text-transform: none;
             background: rgba(255, 180, 0, 0.22);
             color: #ffb400;
             border: 1px solid rgba(255, 180, 0, 0.45);
-            cursor: pointer;
             white-space: nowrap;
             user-select: none;
           }
-          .ftv-override-badge:hover {
-            background: rgba(255, 180, 0, 0.35);
+          .ftv-override-badge.modified {
+            background: rgba(106, 176, 224, 0.22);
+            color: #6ab0e0;
+            border-color: rgba(106, 176, 224, 0.45);
           }
           .ftv-override-badge .ftv-badge-dot {
             width: 7px;
             height: 7px;
             border-radius: 50%;
-            background: #ffb400;
+            background: currentColor;
             flex-shrink: 0;
           }
           .ftv-grid-btn {
@@ -1473,6 +1479,21 @@ class FrameTVArtCard extends HTMLElement {
             font-size: 10px; color: #fff;
           }
           .ftv-op-thumb.selected .ftv-op-check { background: #2f7fbf; border-color: #2f7fbf; }
+          /* Selected-overview thumbs are draggable to control playback order */
+          .ftv-op-thumb.ftv-draggable { cursor: grab; }
+          .ftv-op-thumb.ftv-draggable:active { cursor: grabbing; }
+          .ftv-op-thumb.ftv-dragging { opacity: 0.4; }
+          .ftv-op-thumb.ftv-drop-before { box-shadow: -3px 0 0 0 #6ab0f5; }
+          .ftv-op-thumb.ftv-drop-after  { box-shadow:  3px 0 0 0 #6ab0f5; }
+          .ftv-op-ord {
+            position: absolute; top: 3px; left: 3px;
+            min-width: 18px; height: 18px; padding: 0 5px;
+            border-radius: 9px;
+            background: rgba(0,0,0,0.7); border: 1.5px solid #2f7fbf;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 10px; font-weight: 700; color: #fff; line-height: 1;
+            pointer-events: none;
+          }
           .ftv-op-hint { padding: 16px 14px; font-size: 0.85em; color: rgba(255,255,255,0.4); text-align: center; }
           .ftv-coll-row { margin-bottom: 0; }
           .ftv-coll-header {
@@ -1605,7 +1626,7 @@ class FrameTVArtCard extends HTMLElement {
           </div>
           ${isNotInArtMode ? `` : `
           <div class="ftv-override-popup${this._overridePanelOpen ? ' open' : ''}" id="ftv-override-popup">
-            <div class="ftv-panel-header">Slideshow</div>
+            <div class="ftv-panel-header">Slideshow<span id="ftv-override-badge" class="ftv-override-badge" style="display:none;"><span class="ftv-badge-dot"></span><span class="ftv-badge-label">Preview</span></span></div>
             <div class="ftv-op-settings">
               <div class="ftv-op-settings-row">
                 <select class="ftv-op-select" id="ftv-op-type">
@@ -1899,6 +1920,7 @@ class FrameTVArtCard extends HTMLElement {
       opShuffle.addEventListener('click', (e) => {
         e.stopPropagation();
         if (!this._hass) return;
+        if (this._slideshowUploading || this._slideshowUserRefreshPending || this._slideshowClearRefreshPending) return;
         opShuffle.disabled = true;
         opShuffle.textContent = 'Shuffling\u2026';
         this._slideshowShuffling = true;
@@ -2342,16 +2364,25 @@ class FrameTVArtCard extends HTMLElement {
     }
     const sortedKeys = [...collMap.keys()].sort((a, b) => a.localeCompare(b));
 
-    const thumbHtml = (img) => {
+    const thumbHtml = (img, opts) => {
+      opts = opts || {};
       const isSel = this._slideshowSelected.has(img.path);
       const url = `${basePath}/${encodeURIComponent(img.folder)}/${encodeURIComponent(img.file)}`;
-      return `<div class="ftv-op-thumb${isSel ? ' selected' : ''}${locked ? ' disabled' : ''}" data-path="${this._escapeHtml(img.path)}"><img data-src="${url}" alt="" onerror="this.style.display='none'"><div class="ftv-op-check">${isSel ? '&#10003;' : ''}</div></div>`;
+      const draggableAttr = (opts.draggable && !locked) ? ' draggable="true"' : '';
+      const draggableCls = (opts.draggable && !locked) ? ' ftv-draggable' : '';
+      const ordHtml = (opts.ordinal != null) ? `<div class="ftv-op-ord">${opts.ordinal}</div>` : '';
+      return `<div class="ftv-op-thumb${isSel ? ' selected' : ''}${locked ? ' disabled' : ''}${draggableCls}" data-path="${this._escapeHtml(img.path)}"${draggableAttr}><img data-src="${url}" alt="" onerror="this.style.display='none'"><div class="ftv-op-check">${isSel ? '&#10003;' : ''}</div>${ordHtml}</div>`;
     };
 
-    // Selected overview at top (flat, no pagination)
-    const selectedImgs = this._slideshowAvailable.filter(img => this._slideshowSelected.has(img.path));
+    // Selected overview at top, in user-controlled order (insertion order of
+    // _slideshowSelected, which is what gets uploaded — matters for sequential).
+    const _availPathMap = new Map(this._slideshowAvailable.map(img => [img.path, img]));
+    const selectedImgs = [];
     for (const path of this._slideshowSelected) {
-      if (!_availPathSet.has(path)) {
+      const img = _availPathMap.get(path);
+      if (img) {
+        selectedImgs.push(img);
+      } else {
         const lastSlash = path.lastIndexOf('/');
         const folder = lastSlash > 0 ? path.substring(0, lastSlash) : '';
         const file = lastSlash >= 0 ? path.substring(lastSlash + 1) : path;
@@ -2361,11 +2392,12 @@ class FrameTVArtCard extends HTMLElement {
 
     let html = '';
     if (selectedImgs.length) {
+      const selThumbsHtml = selectedImgs.map((img, i) => thumbHtml(img, { draggable: true, ordinal: i + 1 })).join('');
       html += `<div class="ftv-coll-row">
         <div class="ftv-coll-header open" data-body="ftv-cc-sel">
-          <span class="ftv-chevron">&#9654;</span>Selected (${selectedImgs.length})
+          <span class="ftv-chevron">&#9654;</span>Selected (${selectedImgs.length})${locked ? '' : ' <span class="ftv-coll-page-lbl">drag to reorder</span>'}
         </div>
-        <div class="ftv-coll-body" id="ftv-cc-sel">${selectedImgs.map(thumbHtml).join('')}</div>
+        <div class="ftv-coll-body" id="ftv-cc-sel">${selThumbsHtml}</div>
       </div>`;
     }
 
@@ -2470,6 +2502,70 @@ class FrameTVArtCard extends HTMLElement {
           this._renderOverrideGrid();
         });
       });
+
+      // Drag-and-drop reordering for the Selected overview thumbs.
+      // The order of _slideshowSelected (a Set, insertion-ordered) is what gets
+      // uploaded — important for sequential playback. We reorder by rebuilding
+      // the Set from a permuted array.
+      const selBody = grid.querySelector('#ftv-cc-sel');
+      if (selBody) {
+        let dragSrcPath = null;
+        const clearMarkers = () => {
+          selBody.querySelectorAll('.ftv-drop-before, .ftv-drop-after').forEach(n => {
+            n.classList.remove('ftv-drop-before');
+            n.classList.remove('ftv-drop-after');
+          });
+        };
+        selBody.querySelectorAll('.ftv-op-thumb.ftv-draggable').forEach(el => {
+          el.addEventListener('dragstart', (e) => {
+            dragSrcPath = el.dataset.path;
+            el.classList.add('ftv-dragging');
+            try {
+              e.dataTransfer.effectAllowed = 'move';
+              // Required by Firefox to actually start the drag
+              e.dataTransfer.setData('text/plain', dragSrcPath);
+            } catch (_) { /* noop */ }
+          });
+          el.addEventListener('dragend', () => {
+            el.classList.remove('ftv-dragging');
+            clearMarkers();
+            dragSrcPath = null;
+          });
+          el.addEventListener('dragover', (e) => {
+            if (!dragSrcPath || el.dataset.path === dragSrcPath) return;
+            e.preventDefault();
+            try { e.dataTransfer.dropEffect = 'move'; } catch (_) {}
+            const rect = el.getBoundingClientRect();
+            const before = (e.clientX - rect.left) < rect.width / 2;
+            clearMarkers();
+            el.classList.add(before ? 'ftv-drop-before' : 'ftv-drop-after');
+          });
+          el.addEventListener('dragleave', () => {
+            el.classList.remove('ftv-drop-before');
+            el.classList.remove('ftv-drop-after');
+          });
+          el.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const targetPath = el.dataset.path;
+            const srcPath = dragSrcPath;
+            clearMarkers();
+            if (!srcPath || !targetPath || srcPath === targetPath) return;
+            const rect = el.getBoundingClientRect();
+            const before = (e.clientX - rect.left) < rect.width / 2;
+            const order = [...this._slideshowSelected];
+            const fromIdx = order.indexOf(srcPath);
+            if (fromIdx === -1) return;
+            order.splice(fromIdx, 1);
+            let toIdx = order.indexOf(targetPath);
+            if (toIdx === -1) return;
+            if (!before) toIdx += 1;
+            order.splice(toIdx, 0, srcPath);
+            this._slideshowSelected = new Set(order);
+            this._renderOverrideGrid();
+          });
+        });
+      }
     }
   }
 
@@ -2496,18 +2592,39 @@ class FrameTVArtCard extends HTMLElement {
       applyBtn.textContent = 'Apply';
       applyBtn.disabled = count === 0 || this._slideshowUploading || this._selectionMatchesBaseline();
     }
+    const { file: _wf } = this._getSelectedData();
+    const _wStandby = !_wf || ['standby.png','unknown','unavailable','none',''].includes(String(_wf).trim().toLowerCase());
+    const _locked = this._slideshowUploading || this._slideshowUserRefreshPending || this._slideshowClearRefreshPending || (_wStandby && this._slideshowMode !== 'override');
     const warnEl = this.querySelector('#ftv-op-warn');
     if (warnEl) {
-      const { file: _wf } = this._getSelectedData();
-      const _wStandby = !_wf || ['standby.png','unknown','unavailable','none',''].includes(String(_wf).trim().toLowerCase());
-      const _wLocked = this._slideshowUploading || this._slideshowUserRefreshPending || this._slideshowClearRefreshPending || (_wStandby && this._slideshowMode !== 'override');
-      warnEl.style.display = _wLocked ? '' : 'none';
+      warnEl.style.display = _locked ? '' : 'none';
       warnEl.textContent = this._slideshowUploading ? '\u26a0 Uploading \u2014 grid locked' : (this._slideshowUserRefreshPending || this._slideshowClearRefreshPending) ? '\u26a0 Refreshing \u2014 grid locked' : '\u26a0 Standby \u2014 grid locked';
     }
+    const shufBtn = this.querySelector('#ftv-op-shuffle');
+    if (shufBtn && !this._slideshowShuffling) {
+      shufBtn.disabled = _locked;
+      shufBtn.style.opacity = _locked ? 0.4 : '';
+    }
     const resetBtn = this.querySelector('#ftv-op-reset');
-    if (resetBtn) resetBtn.style.display = this._selectionMatchesBaseline() ? 'none' : '';
+    if (resetBtn) resetBtn.style.display = (_locked || this._selectionMatchesBaseline()) ? 'none' : '';
     const saveBtn = this.querySelector('#ftv-op-save');
-    if (saveBtn) saveBtn.disabled = count === 0;
+    if (saveBtn) saveBtn.disabled = count === 0 || _locked;
+    const badgeEl = this.querySelector('#ftv-override-badge');
+    if (badgeEl) {
+      const differs = !this._selectionMatchesBaseline();
+      const labelEl = badgeEl.querySelector('.ftv-badge-label');
+      if (this._slideshowPreviewMode && differs) {
+        badgeEl.classList.remove('modified');
+        if (labelEl) labelEl.textContent = 'Preview';
+        badgeEl.style.display = '';
+      } else if (differs) {
+        badgeEl.classList.add('modified');
+        if (labelEl) labelEl.textContent = 'Modified';
+        badgeEl.style.display = '';
+      } else {
+        badgeEl.style.display = 'none';
+      }
+    }
     this._renderPresets();
   }
 
@@ -2595,7 +2712,7 @@ class FrameTVArtCard extends HTMLElement {
     }
   }
 
-console.info('%c FRAME-TV-ART-CARD %c v0.3.0 ', 'color: white; background: #03a9f4; font-weight: bold;', '');
+console.info('%c FRAME-TV-ART-CARD %c v0.3.1 ', 'color: white; background: #03a9f4; font-weight: bold;', '');
 
 // Register custom element so Lovelace can use <frame-tv-art-card>
 try {
