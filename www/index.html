@@ -253,8 +253,25 @@
       background: transparent; border: none; color: #b6aba4;
       font-size: 24px; cursor: pointer; line-height: 1;
       padding: 4px 8px; border-radius: 4px;
+      z-index: 2;
     }
     .sl-modal-close:hover { color: #fff; background: rgba(255,255,255,0.08); }
+    /* Prev/next navigation arrows inside the preview modal. */
+    .sl-modal-nav {
+      position: absolute; top: 50%; transform: translateY(-50%);
+      background: rgba(0,0,0,0.45); color: #fff;
+      border: 1px solid rgba(255,255,255,0.15);
+      font-size: 30px; line-height: 1;
+      width: 44px; height: 64px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; border-radius: 6px;
+      z-index: 2;
+      transition: background 120ms ease, opacity 120ms ease;
+    }
+    .sl-modal-nav:hover:not(:disabled) { background: rgba(0,0,0,0.7); }
+    .sl-modal-nav:disabled { opacity: 0.2; cursor: default; }
+    .sl-modal-nav.prev { left: 8px; }
+    .sl-modal-nav.next { right: 8px; }
     .sl-modal-img-wrap {
       position: relative;
       flex: 1; min-height: 0;
@@ -1806,33 +1823,33 @@
     // that doesn't match what your TV shows, please open an issue with the
     // exact color name (it'll be logged to the browser console on first use).
     const _MATTE_COLOR_MAP = {
-      // Whites / creams / tans
-      polar:    '#f5f5f0',
-      white:    '#f5f5f0',
-      ivory:    '#f0e8d0',
-      cotton:   '#ede4d3',
-      neutral:  '#d8d2c4',
-      sand:     '#d8c8a8',
-      antique:  '#c8b08a',
-      warm:     '#c8a878',
-      // Black / grays
-      black:    '#1c1c1c',
-      tinsel:   '#b8b8b8',
-      // Reds / oranges / pinks
-      apricot:  '#e08654',
-      coral:    '#e87a5c',
-      byzantine:'#a02828',
-      burgundy: '#6a1a2a',
-      flamingo: '#e89090',
-      dusty:    '#c08888',
-      // Greens
-      mint:     '#c8e8c8',
-      moss:     '#8aa07a',
-      // Blues
-      sky:      '#b0d0e8',
-      powder:   '#c8dceb',
-      // Purples
-      lavender: '#d0c8e8',
+      // Whites / creams / tans (separated for visible difference).
+      polar:    '#f7f7f2',
+      white:    '#fafaf6',
+      ivory:    '#f1e6c8',
+      cotton:   '#ece1cc',
+      neutral:  '#cfc7b4',
+      sand:     '#d2bf95',
+      antique:  '#bfa275',
+      warm:     '#c9a36a',
+      // Black / grays.
+      black:    '#141414',
+      tinsel:   '#a8a8a6',
+      // Reds / oranges / pinks.
+      apricot:  '#e8783c',
+      coral:    '#f06848',
+      byzantine:'#9a1a26',
+      burgundy: '#5a1020',
+      flamingo: '#e88a98',
+      dusty:    '#b97a86',
+      // Greens.
+      mint:     '#bfe2c0',
+      moss:     '#7a986a',
+      // Blues.
+      sky:      '#a4c8e3',
+      powder:   '#c0d8e8',
+      // Purples.
+      lavender: '#cbc1e3',
     };
     const _MATTE_UNKNOWN_WARNED = new Set();
     function _matteColorHex(name) {
@@ -1843,15 +1860,19 @@
       }
       return '#888888';
     }
-    // Per-type base thickness (px) for the thumbnail-scale preview.
+    // Per-type base thickness (px) for the thumbnail-scale preview. Values are
+    // intentionally separated so each style is visually distinguishable at a
+    // glance — shadowbox is the deepest mount, modern the thinnest.
     const _MATTE_THICK_MAP = {
-      shadowbox: 7, modern: 3, flexible: 5, panoramic: 6,
-      triptych: 5, mix: 5, squares: 5
+      shadowbox: 10, modern: 2, flexible: 5, panoramic: 8,
+      triptych: 5, mix: 6, squares: 5
     };
-    // Per-type base thickness (px) for the modal-scale preview.
+    // Per-type base thickness (px) for the modal-scale preview. The modal
+    // shows a near-fullscreen image so the matte band can be much chunkier;
+    // larger separation between styles is much easier to read at this size.
     const _MATTE_THICK_MAP_MODAL = {
-      shadowbox: 36, modern: 10, flexible: 22, panoramic: 30,
-      triptych: 22, mix: 24, squares: 24
+      shadowbox: 56, modern: 6, flexible: 22, panoramic: 44,
+      triptych: 22, mix: 28, squares: 24
     };
     // Build a per-type CSS style string that visually approximates each Samsung
     // matte style (not just a flat colored border). `scale` is 'thumb' or 'modal'.
@@ -1909,31 +1930,97 @@
     function matteCssForModal(matteId) { return _matteStyle(matteId, 'modal'); }
 
     // ── Large preview modal (opened on dblclick of any slideshow thumbnail) ───────
+    // Holds the current modal's nav state so keyboard/buttons can move within
+    // the same image list (selection or collection) the modal was opened from.
     let _slModalEl = null;
+    let _slModalList = [];
+    let _slModalIdx = 0;
     function closeSlideshowModal() {
       if (_slModalEl) {
         _slModalEl.remove();
         _slModalEl = null;
       }
-      document.removeEventListener('keydown', _slModalEscHandler);
+      _slModalList = [];
+      _slModalIdx = 0;
+      document.removeEventListener('keydown', _slModalKeyHandler);
     }
-    function _slModalEscHandler(e) {
+    function _slModalKeyHandler(e) {
       if (e.key === 'Escape') closeSlideshowModal();
+      else if (e.key === 'ArrowLeft') _slModalNavigate(-1);
+      else if (e.key === 'ArrowRight') _slModalNavigate(1);
     }
-    function openSlideshowModal(img) {
-      if (!img || !img.path) return;
-      closeSlideshowModal();
+    function _slModalNavigate(delta) {
+      if (!_slModalEl || !_slModalList.length) return;
+      const next = _slModalIdx + delta;
+      if (next < 0 || next >= _slModalList.length) return;
+      _slModalIdx = next;
+      _renderSlModalContents();
+    }
+    function _renderSlModalContents() {
+      if (!_slModalEl) return;
+      const img = _slModalList[_slModalIdx];
+      if (!img) return;
       const fullUrl = `${location.origin}/app/frame_tv_art_collections/${encodeURIComponent(img.folder)}/${encodeURIComponent(img.file)}`;
       const isSel = slideshowSelected.has(img.path);
       const curMatte = slideshowMattes[img.path] || '';
+      const $img = _slModalEl.querySelector('.sl-modal-img-frame img');
+      if ($img) {
+        $img.src = fullUrl;
+        $img.alt = img.title || img.file;
+        $img.style.opacity = '';
+      }
+      const $preview = _slModalEl.querySelector('.sl-modal-matte-preview');
+      if ($preview) $preview.setAttribute('style', matteCssForModal(curMatte));
+      const $meta = _slModalEl.querySelector('.sl-modal-meta');
+      if ($meta) {
+        $meta.innerHTML = `<strong>${escapeHtml(img.title || img.file)}</strong>`
+          + (img.artist ? ' &middot; ' + escapeHtml(img.artist) : '')
+          + (img.year ? ' &middot; ' + escapeHtml(String(img.year)) : '')
+          + ` <span style="opacity:0.6; margin-left:6px;">(${_slModalIdx + 1} / ${_slModalList.length})</span>`;
+      }
+      const $matteSel = _slModalEl.querySelector('#sl-modal-matte');
+      if ($matteSel) {
+        const want = curMatte || 'none';
+        // Walk options to find a match (curMatte may be '' which means "none").
+        let found = false;
+        for (const opt of $matteSel.options) {
+          if (opt.value === want) { opt.selected = true; found = true; break; }
+        }
+        if (!found) {
+          for (const opt of $matteSel.options) {
+            if (opt.value === 'none') { opt.selected = true; break; }
+          }
+        }
+      }
+      const $toggle = _slModalEl.querySelector('.sl-modal-toggle');
+      if ($toggle) {
+        $toggle.classList.toggle('selected', isSel);
+        $toggle.textContent = isSel ? '\u2713 Selected' : 'Add to selection';
+      }
+      const $prev = _slModalEl.querySelector('.sl-modal-nav.prev');
+      const $next = _slModalEl.querySelector('.sl-modal-nav.next');
+      if ($prev) $prev.disabled = _slModalIdx <= 0;
+      if ($next) $next.disabled = _slModalIdx >= _slModalList.length - 1;
+    }
+    function openSlideshowModal(list, index) {
+      // Backwards-compat: a single img object may be passed.
+      if (list && !Array.isArray(list) && list.path) {
+        list = [list];
+        index = 0;
+      }
+      if (!Array.isArray(list) || !list.length) return;
+      index = Math.max(0, Math.min(index | 0, list.length - 1));
+      closeSlideshowModal();
+      _slModalList = list;
+      _slModalIdx = index;
+      const img = list[index];
       const matteOptsHtml = matteOptionList().map(m => {
         let label;
         if (m === '__default__') label = 'use global default';
         else if (m === 'none') label = 'none';
         else label = m;
         const val = (m === '__default__') ? '__default__' : m;
-        const sel = (val === curMatte || (!curMatte && m === 'none')) ? ' selected' : '';
-        return `<option value="${escapeHtml(val)}"${sel}>${escapeHtml(label)}</option>`;
+        return `<option value="${escapeHtml(val)}">${escapeHtml(label)}</option>`;
       }).join('');
       const overlay = document.createElement('div');
       overlay.className = 'sl-modal-overlay';
@@ -1941,18 +2028,18 @@
         <div class="sl-modal-content" role="dialog" aria-label="Image preview">
           <button class="sl-modal-close" type="button" title="Close (Esc)">&times;</button>
           <div class="sl-modal-img-wrap">
+            <button class="sl-modal-nav prev" type="button" title="Previous (\u2190)">&#8249;</button>
             <div class="sl-modal-img-frame">
-              <img src="${fullUrl}" alt="${escapeHtml(img.title || img.file)}" onerror="this.style.opacity='0.3'">
-              <div class="sl-modal-matte-preview" style="${matteCssForModal(curMatte)}"></div>
+              <img src="" alt="" onerror="this.style.opacity='0.3'">
+              <div class="sl-modal-matte-preview"></div>
             </div>
+            <button class="sl-modal-nav next" type="button" title="Next (\u2192)">&#8250;</button>
           </div>
-          <div class="sl-modal-meta">
-            <strong>${escapeHtml(img.title || img.file)}</strong>${img.artist ? ' &middot; ' + escapeHtml(img.artist) : ''}${img.year ? ' &middot; ' + escapeHtml(String(img.year)) : ''}
-          </div>
+          <div class="sl-modal-meta"></div>
           <div class="sl-modal-controls">
             <label for="sl-modal-matte">Matte:</label>
             <select id="sl-modal-matte">${matteOptsHtml}</select>
-            <button type="button" class="sl-modal-toggle${isSel ? ' selected' : ''}">${isSel ? '\u2713 Selected' : 'Add to selection'}</button>
+            <button type="button" class="sl-modal-toggle">Add to selection</button>
           </div>
         </div>`;
       document.body.appendChild(overlay);
@@ -1963,35 +2050,46 @@
         if (e.target === overlay) closeSlideshowModal();
       });
       overlay.querySelector('.sl-modal-close').addEventListener('click', closeSlideshowModal);
-      document.addEventListener('keydown', _slModalEscHandler);
+      overlay.querySelector('.sl-modal-nav.prev').addEventListener('click', (e) => {
+        e.stopPropagation(); _slModalNavigate(-1);
+      });
+      overlay.querySelector('.sl-modal-nav.next').addEventListener('click', (e) => {
+        e.stopPropagation(); _slModalNavigate(1);
+      });
+      document.addEventListener('keydown', _slModalKeyHandler);
 
       // Matte change → publish, update local map, refresh modal preview AND grid.
+      // Always operates on the CURRENTLY DISPLAYED image (idx may have advanced).
       const $matteSel = overlay.querySelector('#sl-modal-matte');
       $matteSel.addEventListener('change', () => {
+        const cur = _slModalList[_slModalIdx];
+        if (!cur) return;
         const val = $matteSel.value || '';
-        if (val === '__default__') delete slideshowMattes[img.path];
-        else slideshowMattes[img.path] = val;
-        publishMatte(img.path, val);
+        if (val === '__default__') delete slideshowMattes[cur.path];
+        else slideshowMattes[cur.path] = val;
+        publishMatte(cur.path, val);
         const $preview = overlay.querySelector('.sl-modal-matte-preview');
-        if ($preview) $preview.setAttribute('style', matteCssForModal(slideshowMattes[img.path] || ''));
+        if ($preview) $preview.setAttribute('style', matteCssForModal(slideshowMattes[cur.path] || ''));
         renderSlideshowGrid();
       });
 
-      // Toggle selection from the modal.
+      // Toggle selection from the modal — operates on currently displayed image.
       const $toggle = overlay.querySelector('.sl-modal-toggle');
       $toggle.addEventListener('click', () => {
         if (slideshowUploading) return;
+        const cur = _slModalList[_slModalIdx];
+        if (!cur) return;
         if (slideshowPreviewMode) {
           slideshowPreviewMode = false;
           const $shuf = document.getElementById('sl-preview-shuffle');
           if ($shuf) $shuf.textContent = 'Shuffle';
         }
-        if (slideshowSelected.has(img.path)) {
-          slideshowSelected.delete(img.path);
+        if (slideshowSelected.has(cur.path)) {
+          slideshowSelected.delete(cur.path);
           $toggle.classList.remove('selected');
           $toggle.textContent = 'Add to selection';
         } else {
-          slideshowSelected.add(img.path);
+          slideshowSelected.add(cur.path);
           $toggle.classList.add('selected');
           $toggle.textContent = '\u2713 Selected';
           const newCount = slideshowSelected.size;
@@ -2003,6 +2101,9 @@
         updateSlCounter();
         renderSlideshowGrid();
       });
+
+      // Initial paint of the dynamic content.
+      _renderSlModalContents();
     }
     function publishPresets(arr) {
       if (typeof client !== 'undefined' && client) {
@@ -2124,6 +2225,12 @@
     // Cleared once the user explicitly Applies or Clears.
     const SL_INPROGRESS_KEY = 'sl-inprogress-v1';
     let _slInProgressTimer = null;
+    // True from the moment we restore an unapplied selection from localStorage
+    // until the user explicitly Applies, Resets, or a server-side commit (upload
+    // ack) replaces our state. While true, retained `SLIDESHOW_STATE` messages
+    // must NOT overwrite `slideshowSelected` — otherwise the very next retained
+    // message after page load wipes the user's in-progress work.
+    let slideshowInProgressRestored = false;
     function saveSlideshowInProgress() {
       if (_slInProgressTimer) clearTimeout(_slInProgressTimer);
       _slInProgressTimer = setTimeout(() => {
@@ -2149,6 +2256,7 @@
         }
         if (data && Array.isArray(data.selected) && data.selected.length) {
           slideshowSelected = new Set(data.selected);
+          slideshowInProgressRestored = true;
         }
         if (data && typeof data.maxUploads === 'number' && data.maxUploads > 0) {
           slideshowMaxUploads = data.maxUploads;
@@ -2158,6 +2266,7 @@
     }
     function clearSlideshowInProgress() {
       try { localStorage.removeItem(SL_INPROGRESS_KEY); } catch(_) {}
+      slideshowInProgressRestored = false;
       if (_slInProgressTimer) { clearTimeout(_slInProgressTimer); _slInProgressTimer = null; }
     }
     // Restore early so the first TOPIC_SLIDESHOW_AVAIL doesn't reseed from stale baseline.
@@ -2244,11 +2353,14 @@
             slideshowUserRefreshPending = true;
           }
         } else if (isOverride && !slideshowUploading && !slideshowPostClear
-            && slideshowOverridePaths.length && !slideshowPreviewMode) {
+            && slideshowOverridePaths.length && !slideshowPreviewMode
+            && !slideshowInProgressRestored) {
           // Mode unchanged, override active: resync from server-authoritative override_paths
           // (handles server-side pruning of deleted files from override state).
           // Guard !slideshowPreviewMode so a shuffle preview is never clobbered by a
           // periodic SLIDESHOW_STATE message arriving after the ack is processed.
+          // Guard !slideshowInProgressRestored so a restored unapplied selection from
+          // localStorage isn't wiped by the first retained STATE message after refresh.
           slideshowSelected = new Set(slideshowOverridePaths);
         } else if (!slideshowReverting && !slideshowPostClear && slideshowSelected.size === 0 && !slideshowUploading) {
           // Initial load or settled state: seed from appropriate paths.
@@ -2317,7 +2429,14 @@
       // applied paths yet — treat as in-sync so Apply stays disabled during that window.
       if (slideshowMode === 'override' && slideshowOverridePaths.length === 0) return true;
       if (slideshowSelected.size !== baseline.length) return false;
-      return baseline.every(p => slideshowSelected.has(p));
+      // Order-sensitive: playback order matters in sequential mode, and dragging
+      // to reorder is a meaningful change that must enable Apply even when the
+      // path set is identical to the baseline.
+      const sel = [...slideshowSelected];
+      for (let i = 0; i < baseline.length; i++) {
+        if (sel[i] !== baseline[i]) return false;
+      }
+      return true;
     }
 
     function updateSlCounter() {
@@ -2414,26 +2533,17 @@
         const draggableCls = opts.draggable ? ' sl-draggable' : '';
         const ordHtml = (opts.ordinal != null) ? `<div class="sl-thumb-ord">${opts.ordinal}</div>` : '';
         const curMatte = slideshowMattes[img.path] || '';
-        const hasOverrideCls = curMatte ? ' has-override' : '';
-        const matteOpts = matteOptionList().map(m => {
-          let label;
-          if (m === '__default__') label = 'use global default';
-          else if (m === 'none') label = 'none';
-          else label = m;
-          const val = (m === '__default__') ? '__default__' : m;
-          // Visually preselect "none" when there is no override and the option is plain "none".
-          const sel = (val === curMatte || (!curMatte && m === 'none')) ? ' selected' : '';
-          return `<option value="${escapeHtml(val)}"${sel}>${escapeHtml(label)}</option>`;
-        }).join('');
-        const matteHtml = `<select class="sl-thumb-matte${hasOverrideCls}" data-matte-for="${escapeHtml(img.path)}" title="Passepartout (matte) for this image">${matteOpts}</select>`;
+        // Matte selection moved entirely to the dblclick modal — the per-thumb
+        // <select> made the grid too busy. The matte preview overlay still
+        // renders here so users can see at a glance which images have an
+        // override applied.
         const matteCss = matteCssFor(curMatte);
         const matteOverlay = matteCss ? `<div class="sl-thumb-matte-preview" style="${matteCss}"></div>` : '';
-        return `<div class="sl-thumb${isSel ? ' selected' : ''}${draggableCls}" data-path="${escapeHtml(img.path)}"${draggableAttr}>
+        return `<div class="sl-thumb${isSel ? ' selected' : ''}${draggableCls}" data-path="${escapeHtml(img.path)}"${draggableAttr} title="Double-click to preview / change matte">
           <img data-src="${thumbUrl}" alt="${escapeHtml(img.title || img.file)}" onerror="this.style.display='none'">
           ${matteOverlay}
           <div class="sl-thumb-check" data-check-for="${escapeHtml(img.path)}" title="${isSel ? 'Click to deselect' : ''}">${isSel ? '\u2713' : ''}</div>
           ${ordHtml}
-          ${matteHtml}
         </div>`;
       }
 
@@ -2556,8 +2666,8 @@
       $slGrid.querySelectorAll('.sl-thumb').forEach(el => {
         el.addEventListener('click', (e) => {
           if (slideshowUploading) return;
-          // Clicks on the checkmark or the matte select have their own handlers.
-          if (e.target && e.target.closest && (e.target.closest('.sl-thumb-check') || e.target.closest('.sl-thumb-matte'))) return;
+          // Clicks on the checkmark have their own handler.
+          if (e.target && e.target.closest && e.target.closest('.sl-thumb-check')) return;
           if (slideshowPreviewMode) {
             slideshowPreviewMode = false;
             const $shuf = document.getElementById('sl-preview-shuffle');
@@ -2594,41 +2704,44 @@
         });
       });
 
-      // Per-image matte (passepartout) picker — don't propagate to thumb click.
-      $slGrid.querySelectorAll('select.sl-thumb-matte').forEach(sel => {
-        sel.addEventListener('click', (e) => { e.stopPropagation(); });
-        sel.addEventListener('mousedown', (e) => { e.stopPropagation(); });
-        sel.addEventListener('change', (e) => {
-          e.stopPropagation();
-          const path = sel.dataset.matteFor;
-          const val = sel.value || '';
-          // Optimistic local update; broker retain will confirm.
-          if (val === '__default__') {
-            delete slideshowMattes[path];
-          } else {
-            slideshowMattes[path] = val;
-          }
-          publishMatte(path, val);
-          // Re-render so the matte preview overlay updates immediately.
-          renderSlideshowGrid();
-        });
-      });
+      // Per-image matte (passepartout) picker lives in the dblclick preview
+      // modal now — the per-thumb <select> made the small grid too noisy. The
+      // matte preview overlay still renders here so users can see at a glance
+      // which images have an override applied.
 
       // Double-click a thumbnail → open the large preview modal so the matte choice
-      // can be evaluated at near-full-screen size.
+      // can be evaluated at near-full-screen size. The modal navigates within
+      // whichever section the thumb was opened from (Selected vs a collection).
       $slGrid.querySelectorAll('.sl-thumb').forEach(el => {
         el.addEventListener('dblclick', (e) => {
           e.preventDefault();
           e.stopPropagation();
           const path = el.dataset.path;
           if (!path) return;
-          const img = (slideshowAvailable.find(i => i.path === path)) || (() => {
+          // Resolve the image list this thumb belongs to so the modal's
+          // arrow keys / nav buttons walk the correct sequence.
+          const $body = el.closest('.sl-coll-body');
+          const containerId = $body && $body.id;
+          let list = [];
+          if (containerId === 'sl-cc-sel') {
+            list = selectedImgs.slice();
+          } else if (containerId && containerId.startsWith('sl-cc-')) {
+            const ci = parseInt(containerId.substring(6), 10);
+            const k = sortedKeys[ci];
+            if (k) list = (collMap.get(k) || []).slice();
+          }
+          let idx = list.findIndex(i => i.path === path);
+          if (idx < 0) {
+            // Fallback: synthesise a single-image list.
             const ls = path.lastIndexOf('/');
             const folder = ls > 0 ? path.substring(0, ls) : '';
             const file = ls >= 0 ? path.substring(ls + 1) : path;
-            return { path, folder, file, title: '', artist: folder, year: '' };
-          })();
-          openSlideshowModal(img);
+            const fallbackImg = (slideshowAvailable.find(i => i.path === path))
+              || { path, folder, file, title: '', artist: folder, year: '' };
+            list = [fallbackImg];
+            idx = 0;
+          }
+          openSlideshowModal(list, idx);
         });
       });
 

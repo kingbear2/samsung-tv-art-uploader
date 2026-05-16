@@ -20,15 +20,7 @@ A custom [Home Assistant](https://www.home-assistant.io/) Lovelace card for cont
 - **Collection selector** — multi-select dropdown to choose which art collections the TV should cycle through
 
   ![Collection selector dropdown](images/hacard_collection_selection_v0.2.1.png)
-- **Slideshow controls** — popup panel to configure slideshow mode (random / sequential), rotation interval, and max uploads; includes an Apply button to push settings to the backend
-- **Manual override** — hand-pick artwork from a per-collection carousel grid with S/M/L thumbnail size controls; Shuffle button previews a random set without committing it; Apply pins the selection to the TV. A badge in the panel header indicates pending changes: **● Preview** (amber) when a Shuffle preview is loaded but not applied, **● Modified** (blue) when your selection differs from what's currently on the TV
-- **Drag-and-drop ordering** — in the Selected overview at the top of the override grid, drag thumbnails to control the sequential playback order; ordinal badges (1, 2, 3…) show the current order, and the order is preserved when saved as a preset
-- **Per-image passepartout (matte)** — a small dropdown on each thumbnail in the override grid lets you pick a matte type and color for that specific image; overrides are persisted server-side and synced across all clients via retained MQTT, applied on next upload, or live re-applied via `change_matte` if the image is already on the TV. Set to `default` to fall back to the global `MATTE`/`PORTRAIT_MATTE` env values
-- **Large preview modal** — double-click any thumbnail in the override grid to open a near-full-screen preview with a higher-fidelity matte simulation and an inline matte/selection picker; close with Esc or click outside
-- **In-progress autosave** — the unapplied selection and max-uploads count are stored to `localStorage` so a HA frontend refresh or card re-instantiation doesn't lose work; auto-cleared once you Apply or Reset
-- **Saved Selections** — name and save any selection as a preset; presets are stored as a retained MQTT message so they sync across the web UI and all HA cards; includes one-click load, update, and delete. On first start the backend auto-generates thematic defaults (Landscapes, Marine, Impressionism, etc.) from your installed collections
-
-  ![Slideshow controls popup and manual override grid](images/hacard_slideshow_v0.3.0.png)
+- **Settings cog → web UI** — the cog button opens the standalone [Samsung TV Art Uploader](https://github.com/kohlerryan/samsung-tv-art-uploader) web UI in a new tab. All slideshow editing, per-image matte selection, saved selections, and backend settings live there. Set `web_ui_url` in the card config to enable (see [Dashboard card](#dashboard-card) below). The card itself stays focused on showing the currently active artwork and switching collections from the dashboard.
 - **Not in art mode state** — when the TV is not in Art Mode the card collapses to a compact row showing the card title and a subtle "TV is not in art mode" label; controls are hidden until art mode resumes
 
   ![Card in not-in-art-mode state](images/hacard_art_mode_off_v0.2.1.png)
@@ -36,10 +28,9 @@ A custom [Home Assistant](https://www.home-assistant.io/) Lovelace card for cont
 - **Refresh** — clears uploads and re-seeds the TV with a fresh randomised set
 - **Update & Refresh** — fetches the latest collection updates from git, rebuilds the artwork database, then re-seeds
 - **Live progress log** — real-time status messages streamed from the backend during any refresh operation; state is preserved across page reloads for up to 15 minutes
-- **Settings panel** — configure TV IP address and MQTT broker connection (host, port, username, password) without leaving the dashboard; Apply & Restart pushes the new config and restarts the backend container
-
-  ![Settings panel with TV IP and MQTT broker fields](images/hacard_settings_v0.2.2.png)
 - **Mixed-content safe** — resolves image paths over HTTP or HTTPS to match the HA frontend protocol
+
+> **Why open the web UI instead of editing in the dashboard?** The card used to host slideshow editing, matte pickers, presets, and settings as in-card popups. As those features grew (drag-reorder, per-image matte, modal preview, autosave) the popup UX hit hard ceilings inside the Lovelace context. Pointing the cog at the real web UI keeps the card simple and lets the full editor live where it works best.
 
 ---
 
@@ -81,7 +72,12 @@ Add the card to any dashboard view. Minimal configuration:
 type: custom:frame-tv-art-card
 title: Frame TV Art
 image_path: /local/images/frame_tv_art_collections
+web_ui_url: http://samsung-tv-art.local:8080
 ```
+
+The `web_ui_url` is the address of the standalone web UI (typically port `8080` on the host running the `samsung-tv-art` container). Clicking the cog in the card header opens that URL in a new tab — all slideshow editing, matte selection, presets, and backend settings live there. If `web_ui_url` is empty the cog is inert (and the tooltip says so).
+
+> **HTTPS Home Assistant + HTTP uploader:** opening the URL in a new tab works fine (top-level navigation is allowed cross-scheme), but the browser may show a "Not Secure" warning on the uploader tab. If you'd prefer no warning, run the uploader behind a reverse proxy (Caddy add-on, NGINX Proxy Manager add-on, Traefik, etc.) and point `web_ui_url` at the HTTPS host.
 
 All entity and MQTT topic names default to the values published by the `samsung-tv-art` backend container and can be overridden if needed:
 
@@ -89,6 +85,7 @@ All entity and MQTT topic names default to the values published by the `samsung-
 type: custom:frame-tv-art-card
 title: Frame TV Art
 image_path: /local/images/frame_tv_art_collections
+web_ui_url: http://samsung-tv-art.local:8080
 
 # Override only if your sensor names differ from the defaults
 settings_entity: sensor.frame_tv_art_settings
@@ -101,6 +98,26 @@ refresh_cmd_topic: frame_tv/cmd/collections/refresh
 refresh_ack_topic: frame_tv/ack/collections/refresh
 sync_ack_topic: frame_tv/ack/settings/sync_collections
 ```
+
+### Optional: add the web UI as a sidebar item
+
+If you'd rather stay inside Home Assistant when editing, you can pin the web UI to the HA sidebar with the built-in `panel_iframe` integration (no extra software needed). Add to `configuration.yaml`:
+
+```yaml
+panel_iframe:
+  frame_tv_art:
+    title: Frame TV Art
+    icon: mdi:palette
+    url: http://samsung-tv-art.local:8080
+    require_admin: false
+```
+
+> **Caveat — mixed content:** browsers refuse to load an HTTP iframe inside an HTTPS page, with no override. If your HA frontend is served over HTTPS (Nabu Casa, DuckDNS+LE, a reverse proxy in front of HA, etc.) the iframe will appear blank or show a security error. To make the sidebar option work you either need:
+>
+> - an HTTP HA frontend (LAN-only setups), **or**
+> - the uploader served over HTTPS too (reverse proxy with a cert).
+>
+> The cog-opens-new-tab behaviour above does **not** have this problem because top-level navigation between schemes is allowed by browsers.
 
 ---
 

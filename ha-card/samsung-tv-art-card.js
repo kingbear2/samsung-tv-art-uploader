@@ -38,6 +38,12 @@ class FrameTVArtCard extends HTMLElement {
     this._slideshowCurrentPaths = [];
     this._slideshowOverridePaths = [];
     this._slideshowSelected = new Set();
+    // True from the moment we restore an unapplied selection from localStorage
+    // until the user explicitly Applies, Resets, or a server-side commit (upload
+    // ack) replaces our state. While true, retained `SLIDESHOW_STATE` messages
+    // must NOT overwrite `_slideshowSelected` — otherwise the very next retained
+    // message after refresh wipes the user's in-progress work.
+    this._slideshowInProgressRestored = false;
     this._slideshowMattes = {};
     this._slideshowMatteTypes = [];
     this._slideshowMatteColors = [];
@@ -52,6 +58,7 @@ class FrameTVArtCard extends HTMLElement {
         const _slAge = Date.now() - (_slData && _slData.ts ? _slData.ts : 0);
         if (_slAge < 24 * 60 * 60 * 1000 && _slData && Array.isArray(_slData.selected) && _slData.selected.length) {
           this._slideshowSelected = new Set(_slData.selected);
+          this._slideshowInProgressRestored = true;
           if (typeof _slData.maxUploads === 'number' && _slData.maxUploads > 0) {
             this._slideshowMaxUploads = _slData.maxUploads;
           }
@@ -125,6 +132,10 @@ class FrameTVArtCard extends HTMLElement {
       image_path: config.image_path || '/local/images/frame_tv_art_collections',
       standby_image_path: config.standby_image_path,
       preload_thumbnails: false,
+      // URL of the standalone Samsung TV Art Uploader web UI. Clicking the cog
+      // opens this URL in a new tab. Required for the cog to do anything.
+      // Example: http://samsung-tv-art.local:8080 or http://<docker-host>:8080
+      web_ui_url: config.web_ui_url || '',
       ...config
     };
     // don't eagerly build standby path here; compute based on protocol when needed
@@ -560,8 +571,11 @@ class FrameTVArtCard extends HTMLElement {
     } else {
       // Mode unchanged. If override, resync selection from server-authoritative override_paths
       // (handles server-side pruning of deleted files from override state).
+      // Skip when an unapplied restored selection is being held — we'd wipe the
+      // user's in-progress work as soon as the first retained STATE arrives.
       if (mode === 'override' && !this._slideshowUploading && !this._slideshowPostClear
-          && this._slideshowOverridePaths.length) {
+          && this._slideshowOverridePaths.length
+          && !this._slideshowInProgressRestored) {
         this._slideshowSelected = new Set(this._slideshowOverridePaths);
       }
       if (this._overridePanelOpen) {
@@ -855,33 +869,33 @@ class FrameTVArtCard extends HTMLElement {
   // back to gray and are logged once to the console (please report them).
   static get _MATTE_COLOR_MAP() {
     return {
-      // Whites / creams / tans
-      polar:    '#f5f5f0',
-      white:    '#f5f5f0',
-      ivory:    '#f0e8d0',
-      cotton:   '#ede4d3',
-      neutral:  '#d8d2c4',
-      sand:     '#d8c8a8',
-      antique:  '#c8b08a',
-      warm:     '#c8a878',
-      // Black / grays
-      black:    '#1c1c1c',
-      tinsel:   '#b8b8b8',
-      // Reds / oranges / pinks
-      apricot:  '#e08654',
-      coral:    '#e87a5c',
-      byzantine:'#a02828',
-      burgundy: '#6a1a2a',
-      flamingo: '#e89090',
-      dusty:    '#c08888',
-      // Greens
-      mint:     '#c8e8c8',
-      moss:     '#8aa07a',
-      // Blues
-      sky:      '#b0d0e8',
-      powder:   '#c8dceb',
-      // Purples
-      lavender: '#d0c8e8',
+      // Whites / creams / tans (separated for visible difference).
+      polar:    '#f7f7f2',
+      white:    '#fafaf6',
+      ivory:    '#f1e6c8',
+      cotton:   '#ece1cc',
+      neutral:  '#cfc7b4',
+      sand:     '#d2bf95',
+      antique:  '#bfa275',
+      warm:     '#c9a36a',
+      // Black / grays.
+      black:    '#141414',
+      tinsel:   '#a8a8a6',
+      // Reds / oranges / pinks.
+      apricot:  '#e8783c',
+      coral:    '#f06848',
+      byzantine:'#9a1a26',
+      burgundy: '#5a1020',
+      flamingo: '#e88a98',
+      dusty:    '#b97a86',
+      // Greens.
+      mint:     '#bfe2c0',
+      moss:     '#7a986a',
+      // Blues.
+      sky:      '#a4c8e3',
+      powder:   '#c0d8e8',
+      // Purples.
+      lavender: '#cbc1e3',
     };
   }
   _matteColorHex(name) {
@@ -910,12 +924,12 @@ class FrameTVArtCard extends HTMLElement {
     const c = this._matteColorHex(color);
     const isModal = scale === 'modal';
     const thickThumb = {
-      shadowbox: 7, modern: 3, flexible: 5, panoramic: 6,
-      triptych: 5, mix: 5, squares: 5
+      shadowbox: 10, modern: 2, flexible: 5, panoramic: 8,
+      triptych: 5, mix: 6, squares: 5
     };
     const thickModal = {
-      shadowbox: 36, modern: 10, flexible: 22, panoramic: 30,
-      triptych: 22, mix: 24, squares: 24
+      shadowbox: 56, modern: 6, flexible: 22, panoramic: 44,
+      triptych: 22, mix: 28, squares: 24
     };
     const T = (isModal ? thickModal : thickThumb)[type] || (isModal ? 22 : 5);
     switch (type) {
@@ -974,6 +988,7 @@ class FrameTVArtCard extends HTMLElement {
   }
   _clearSlideshowInProgress() {
     try { localStorage.removeItem('ftv-card-sl-inprogress-v1'); } catch(_) {}
+    this._slideshowInProgressRestored = false;
     if (this._slInProgressTimer) { clearTimeout(this._slInProgressTimer); this._slInProgressTimer = null; }
   }
 
@@ -1845,8 +1860,25 @@ class FrameTVArtCard extends HTMLElement {
             background: transparent; border: none; color: #b6aba4;
             font-size: 24px; cursor: pointer; line-height: 1;
             padding: 4px 8px; border-radius: 4px;
+            z-index: 2;
           }
           .ftv-modal-close:hover { color: #fff; background: rgba(255,255,255,0.08); }
+          /* Prev/next navigation arrows inside the preview modal. */
+          .ftv-modal-nav {
+            position: absolute; top: 50%; transform: translateY(-50%);
+            background: rgba(0,0,0,0.45); color: #fff;
+            border: 1px solid rgba(255,255,255,0.15);
+            font-size: 30px; line-height: 1;
+            width: 44px; height: 64px;
+            display: flex; align-items: center; justify-content: center;
+            cursor: pointer; border-radius: 6px;
+            z-index: 2;
+            transition: background 120ms ease, opacity 120ms ease;
+          }
+          .ftv-modal-nav:hover:not(:disabled) { background: rgba(0,0,0,0.7); }
+          .ftv-modal-nav:disabled { opacity: 0.2; cursor: default; }
+          .ftv-modal-nav.prev { left: 8px; }
+          .ftv-modal-nav.next { right: 8px; }
           .ftv-modal-img-wrap {
             position: relative;
             flex: 1; min-height: 0;
@@ -2011,10 +2043,7 @@ class FrameTVArtCard extends HTMLElement {
               <span>${this._config.title}</span>
             </div>
             <span class="spacer"></span>
-            <button class="ftv-grid-btn${this._overridePanelOpen ? ' active' : ''}" id="ftv-grid-btn" title="Slideshow override">
-              <ha-icon icon="mdi:view-grid"></ha-icon>
-            </button>
-            <button class="ftv-gear" id="ftv-gear" title="Settings">
+            <button class="ftv-gear" id="ftv-gear" title="${this._config.web_ui_url ? 'Open Samsung TV Art Uploader' : 'Settings (configure web_ui_url to enable)'}">
               <ha-icon icon="mdi:cog"></ha-icon>
             </button>
             `}
@@ -2437,46 +2466,18 @@ class FrameTVArtCard extends HTMLElement {
     });
     // Populate the grid immediately if panel is open
     if (this._overridePanelOpen) this._renderOverrideGrid();
-    if (gear && panel) {
+    if (gear) {
       gear.addEventListener('click', (e) => {
         e.stopPropagation();
-        panel.classList.toggle('open');
-        if (panel.classList.contains('open')) {
-          loadEnv();
-          // Close the override/slideshow popup when settings opens
-          const overridePopup = this.querySelector('#ftv-override-popup');
-          const gridBtnEl = this.querySelector('#ftv-grid-btn');
-          if (this._overridePanelOpen) {
-            this._overridePanelOpen = false;
-            if (overridePopup) overridePopup.classList.remove('open');
-            if (gridBtnEl) gridBtnEl.classList.remove('active');
-            this._lastStateHash = this._getStateHash();
-          }
+        const url = this._config.web_ui_url;
+        if (!url) {
+          if (setStatus) setStatus('Set web_ui_url in card config to open the web UI', 6000);
+          // eslint-disable-next-line no-console
+          console.warn('[frame-tv-art-card] No web_ui_url configured; cog click ignored.');
+          return;
         }
+        window.open(url, '_blank', 'noopener,noreferrer');
       });
-      // Remove previous document-level listener before registering a new one
-      if (this._docClickHandler) {
-        document.removeEventListener('click', this._docClickHandler, { capture: true });
-        this._docClickHandler = null;
-      }
-      this._docClickHandler = (e) => {
-        const path = (typeof e.composedPath === 'function') ? e.composedPath() : [];
-        const inside = (panel && path.includes(panel)) || (gear && path.includes(gear));
-        if (!inside) panel.classList.remove('open');
-        // Also close override popup on outside click
-        const overridePopup = this.querySelector('#ftv-override-popup');
-        const gridBtnEl = this.querySelector('#ftv-grid-btn');
-        const badgeEl = this.querySelector('#ftv-override-badge');
-        const insideOverride = (overridePopup && path.includes(overridePopup)) || (gridBtnEl && path.includes(gridBtnEl)) || (badgeEl && path.includes(badgeEl));
-        if (!insideOverride && this._overridePanelOpen) {
-          this._overridePanelOpen = false;
-          // Direct DOM toggle — avoids full re-render and background flash
-          if (overridePopup) overridePopup.classList.remove('open');
-          if (gridBtnEl) gridBtnEl.classList.remove('active');
-          this._lastStateHash = this._getStateHash();
-        }
-      };
-      document.addEventListener('click', this._docClickHandler, { capture: true });
     }
     if (inIp) inIp.addEventListener('input', envDirty);
     if (inMqttHost) inMqttHost.addEventListener('input', envDirty);
@@ -3059,7 +3060,14 @@ class FrameTVArtCard extends HTMLElement {
     // applied paths yet — treat as in-sync so Apply stays disabled during that window.
     if (this._slideshowMode === 'override' && this._slideshowOverridePaths.length === 0) return true;
     if (this._slideshowSelected.size !== baseline.length) return false;
-    return baseline.every(p => this._slideshowSelected.has(p));
+    // Order-sensitive: playback order matters in sequential mode, and dragging
+    // to reorder is a meaningful change that must enable Apply even when the
+    // path set is identical to the baseline.
+    const sel = [...this._slideshowSelected];
+    for (let i = 0; i < baseline.length; i++) {
+      if (sel[i] !== baseline[i]) return false;
+    }
+    return true;
   }
 
   _updateOverrideCounter() {
