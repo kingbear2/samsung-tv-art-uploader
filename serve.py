@@ -243,42 +243,43 @@ class FallbackHandler(SimpleHTTPRequestHandler):
             return self._json(200, self._read_ui_mqtt())
         if self.path.startswith('/api/collections-list'):
             return self._handle_api_get_collections_list()
-        if self.path.startswith('/api/matte_probe_status'):
-            return self._handle_api_get_matte_probe_status()
+        if self.path.startswith('/api/matte_blocklist'):
+            return self._handle_api_get_matte_blocklist()
         if self.path in ('/favicon.png', '/favicon.ico'):
             return self._serve_favicon()
         return super().do_GET()
 
-    def _handle_api_get_matte_probe_status(self):
-        """Return the per-image matte probe runtime state written by
-        uploader.py (queue, in-progress, completed results). UI polls this
-        to decide whether each per-image matte dropdown should be disabled
-        ('Probing\u2026 X/Y') and which combos to hide once a probe completes.
+    def _handle_api_get_matte_blocklist(self):
+        """Return the global matte blocklist JSON written by uploader.py's
+        one-shot probe (see _matte_probe_global). Returns an empty stub if
+        probing has never been run.
 
-        Marks `stale: true` (and clears `results`) when the TV's current
-        identity no longer matches the one captured when the cache was
-        last persisted \u2014 a Tizen update may have changed which combos the
-        TV accepts."""
-        path = '/data/matte_probe_status.json'
+        Also fetches the TV's current identity (model + firmware) from its
+        unauthenticated REST endpoint and compares it to what was captured
+        at probe time. If they differ, the blocklist is marked `stale: true`
+        and `bad_combos` is cleared server-side so the UI doesn't hide combos
+        based on a previous firmware's behavior. The probed/current device
+        info is always returned for diagnostics."""
+        path = '/data/matte_blocklist.json'
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.loads(f.read() or '{}')
         except FileNotFoundError:
-            data = {'tv_fingerprint': {}, 'in_progress': None, 'queue': [], 'results': {}}
+            data = {'bad_combos': [], 'probed_at': None}
         except Exception as e:
             return self._json(500, {'error': str(e)})
         current = _get_cached_tv_device_info()
-        probed_fp = data.get('tv_fingerprint') if isinstance(data.get('tv_fingerprint'), dict) else {}
+        probed = data.get('tv_device') if isinstance(data.get('tv_device'), dict) else {}
         stale = False
-        if probed_fp and current:
+        if probed and current:
             for k in ('model', 'firmware_version'):
-                if probed_fp.get(k) and current.get(k) and probed_fp[k] != current[k]:
+                if probed.get(k) and current.get(k) and probed[k] != current[k]:
                     stale = True
                     break
         data['current_tv_device'] = current
         data['stale'] = stale
         if stale:
-            data['results'] = {}
+            data['bad_combos'] = []
         return self._json(200, data)
 
     def _serve_favicon(self):

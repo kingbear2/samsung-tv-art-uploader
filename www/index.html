@@ -745,8 +745,8 @@
         scheduleAvailableRetry();
         // Ask the backend to fetch the TV's available matte types/colors and publish them retained.
         requestMatteOptions();
-        // Begin polling per-image probe state (worker runs in uploader.py).
-        _scheduleMatteProbePoll();
+        // Pull the global matte blocklist (probed once per firmware in uploader.py).
+        loadMatteBlocklist();
         // Retained messages arrive as a burst after subscribe. Defer sync so the
         // trigger text reflects the fully-settled state after all messages land.
         setTimeout(() => { syncTriggerText(); updateButtons(); }, 600);
@@ -1813,88 +1813,43 @@
       }
     }
     function _comboKey(t, c) { return c ? `${t}_${c}` : t; }
-    // ----- Per-image matte probe status (background worker in uploader.py) -----
-    // The uploader runs a probe against each uploaded image to discover which
-    // (type, color) combos that image actually accepts. We disable the
-    // per-image matte dropdown in the modal until its image is probed, then
-    // hide the bad combos for that specific image. Indexed by path_rel to
-    // match the keys used elsewhere (slideshowMattes, slideshowSelected).
-    const matteProbe = {
+    // ----- Global matte blocklist (single-shot probe in uploader.py) -----
+    // uploader.py probes every (type, color) combo once against the standby
+    // image after the TV is reachable, and persists the failures to
+    // /data/matte_blocklist.json keyed by TV model+firmware. The UI fetches
+    // that list and simply removes the bad combos from the matte dropdown.
+    // The probe re-runs automatically when the TV's fingerprint changes
+    // (e.g. firmware update); the server marks the cache `stale` until then.
+    const slideshowMatteBlocklist = {
+      probed: false,
       stale: false,
-      // path_rel -> { status: 'queued'|'probing'|'done', done, total, badCombos: Set }
-      byPath: new Map(),
-      currentProbing: null,  // path_rel currently being probed, or null
+      badCombos: new Set(),      // Set of `${type}_${color}` keys
+      probedTvDevice: null,
+      currentTvDevice: null,
     };
-    let _matteProbePollTimer = null;
-    function _matteProbeRebuildByPath(data) {
-      const byPath = new Map();
-      const pathByBn = (data && data.path_rel_by_basename) || {};
-      const inProg = data && data.in_progress;
-      const queue = (data && data.queue) || [];
-      const results = (data && data.results) || {};
-      for (const [bn, entry] of Object.entries(results || {})) {
-        const p = pathByBn[bn] || bn;
-        const badCombos = new Set(((entry && entry.bad_combos) || []).map(([t, c]) => _comboKey(t, c)));
-        byPath.set(p, { status: 'done', done: 0, total: 0, badCombos });
-      }
-      for (const bn of queue) {
-        const p = pathByBn[bn] || bn;
-        if (!byPath.has(p) || byPath.get(p).status === 'done') {
-          // Don't downgrade a 'done' entry — but if there's nothing yet, mark queued.
-          if (!byPath.has(p)) byPath.set(p, { status: 'queued', done: 0, total: 0, badCombos: new Set() });
-        }
-      }
-      let currentProbing = null;
-      if (inProg && inProg.basename) {
-        const p = pathByBn[inProg.basename] || inProg.basename;
-        const done = (inProg.done | 0), total = (inProg.total | 0);
-        byPath.set(p, { status: 'probing', done, total, badCombos: new Set() });
-        currentProbing = p;
-      }
-      matteProbe.byPath = byPath;
-      matteProbe.currentProbing = currentProbing;
-    }
-    async function loadMatteProbeStatus() {
+    async function loadMatteBlocklist() {
       try {
-        const r = await fetch('/api/matte_probe_status', { cache: 'no-store' });
-        if (!r.ok) return false;
+        const r = await fetch('/api/matte_blocklist', { cache: 'no-store' });
+        if (!r.ok) return;
         const d = await r.json();
-        matteProbe.stale = !!d.stale;
-        _matteProbeRebuildByPath(d);
-        // Refresh the modal if it's open so the dropdown updates live.
-        if (_slModalEl) _renderSlModalContents();
-        // Anything still queued/probing? Poll faster.
-        const active = !!matteProbe.currentProbing
-          || Array.from(matteProbe.byPath.values()).some(v => v.status !== 'done');
-        return active;
-      } catch (e) { return false; }
+        slideshowMatteBlocklist.probed = !!(d && d.probed_at);
+        slideshowMatteBlocklist.stale = !!(d && d.stale);
+        slideshowMatteBlocklist.probedTvDevice = (d && d.tv_device) || null;
+        slideshowMatteBlocklist.currentTvDevice = (d && d.current_tv_device) || null;
+        const bad = ((d && d.bad_combos) || []).map(([t, c]) => _comboKey(t, c));
+        slideshowMatteBlocklist.badCombos = new Set(bad);
+        if (slideshowMatteBlocklist.stale) {
+          console.warn('Matte blocklist marked stale (TV firmware changed); waiting for re-probe',
+            slideshowMatteBlocklist.probedTvDevice, '->', slideshowMatteBlocklist.currentTvDevice);
+        }
+      } catch (e) { /* ignore */ }
     }
-    function _scheduleMatteProbePoll() {
-      if (_matteProbePollTimer) return;
-      const tick = async () => {
-        const active = await loadMatteProbeStatus();
-        _matteProbePollTimer = setTimeout(tick, active ? 5000 : 30000);
-      };
-      _matteProbePollTimer = setTimeout(tick, 0);
-    }
-    function matteOptionListForImage(imgPath) {
-      // Per-image variant. Returns { ready: bool, label?: string, opts?: string[] }.
-      // When not ready, the dropdown should be disabled and `label` rendered as
-      // a single-option placeholder so the user understands the gating.
-      const st = matteProbe.byPath.get(imgPath);
-      if (!st || st.status !== 'done') {
-        let label;
-        if (!st) label = 'Probing matte support\u2026';
-        else if (st.status === 'probing') {
-          label = st.total > 0
-            ? `Probing matte support\u2026 (${st.done}/${st.total})`
-            : 'Probing matte support\u2026';
-        } else label = 'Queued for matte probe\u2026';
-        return { ready: false, label };
-      }
-      // Done — build a per-image option list using this image's badCombos.
+    function matteOptionList() {
+      // Single global list. Always includes 'none' (the reset path; never
+      // blocklisted because the TV returns -7 on a redundant 'none' set,
+      // not because 'none' is unsupported).
       const opts = ['none'];
-      const bad = st.badCombos;
+      const bad = slideshowMatteBlocklist.badCombos;
       const types = (slideshowMatteTypes && slideshowMatteTypes.length) ? slideshowMatteTypes
         : ['shadowbox', 'modern', 'flexible'];
       const colors = (slideshowMatteColors && slideshowMatteColors.length) ? slideshowMatteColors
@@ -1907,7 +1862,7 @@
           opts.push(`${t}_${c}`);
         }
       }
-      return { ready: true, opts };
+      return opts;
     }
     // Visual hints for the on-thumbnail matte color preview.
     // Hex approximations of the Samsung Frame matte palette. If you spot one
@@ -2060,25 +2015,7 @@
       }
       const $matteSel = _slModalEl.querySelector('#sl-modal-matte');
       if ($matteSel) {
-        // Rebuild the option list for THIS image (per-image probe gating).
         const want = curMatte || 'none';
-        const r = matteOptionListForImage(img.path);
-        let html;
-        if (!r.ready) {
-          // Single disabled placeholder option keeps the layout intact and
-          // makes the wait visible.
-          html = `<option value="__probing__">${escapeHtml(r.label)}</option>`;
-          $matteSel.disabled = true;
-          $matteSel.title = r.label;
-        } else {
-          html = r.opts.map(m => {
-            const label = (m === 'none') ? 'none' : m;
-            return `<option value="${escapeHtml(m)}">${escapeHtml(label)}</option>`;
-          }).join('');
-          $matteSel.disabled = false;
-          $matteSel.title = '';
-        }
-        $matteSel.innerHTML = html;
         // Walk options to find a match (curMatte may be '' which means "none").
         let found = false;
         for (const opt of $matteSel.options) {
@@ -2086,7 +2023,7 @@
         }
         if (!found) {
           for (const opt of $matteSel.options) {
-            if (opt.value === 'none' || opt.value === '__probing__') { opt.selected = true; break; }
+            if (opt.value === 'none') { opt.selected = true; break; }
           }
         }
       }
@@ -2112,8 +2049,10 @@
       _slModalList = list;
       _slModalIdx = index;
       const img = list[index];
-      // Dropdown options are filled per-image by _renderSlModalContents below.
-      const matteOptsHtml = '';
+      const matteOptsHtml = matteOptionList().map(m => {
+        const label = (m === 'none') ? 'none' : m;
+        return `<option value="${escapeHtml(m)}">${escapeHtml(label)}</option>`;
+      }).join('');
       const overlay = document.createElement('div');
       overlay.className = 'sl-modal-overlay';
       overlay.innerHTML = `
@@ -2157,7 +2096,6 @@
         const cur = _slModalList[_slModalIdx];
         if (!cur) return;
         const val = $matteSel.value || '';
-        if (val === '__probing__') return;  // placeholder while probing — ignore
         if (val === '__default__') delete slideshowMattes[cur.path];
         else slideshowMattes[cur.path] = val;
         publishMatte(cur.path, val);
