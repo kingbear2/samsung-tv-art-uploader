@@ -270,12 +270,14 @@ class FallbackHandler(SimpleHTTPRequestHandler):
             return self._json(500, {'error': str(e)})
         current = _get_cached_tv_device_info()
         probed = data.get('tv_device') if isinstance(data.get('tv_device'), dict) else {}
+        # Only compare model here \u2014 the TV's REST endpoint commonly reports
+        # firmwareVersion as 'Unknown', and the authoritative invariant
+        # (Art API version) is not visible to this process. uploader.py
+        # detects real Art API changes on next restart and re-probes.
         stale = False
         if probed and current:
-            for k in ('model', 'firmware_version'):
-                if probed.get(k) and current.get(k) and probed[k] != current[k]:
-                    stale = True
-                    break
+            if probed.get('model') and current.get('model') and probed['model'] != current['model']:
+                stale = True
         data['current_tv_device'] = current
         data['stale'] = stale
         data.setdefault('probe_in_progress', False)

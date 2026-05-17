@@ -2610,7 +2610,13 @@ class monitor_and_display:
     def _matte_probe_fetch_tv_fingerprint(self):
         """Synchronous REST GET to the TV's /api/v2/ endpoint to capture a
         model+firmware identity. Returns {} on any failure. Called from a
-        thread executor (do not call directly from the event loop)."""
+        thread executor (do not call directly from the event loop).
+
+        Note: many Samsung Frame TVs report `firmwareVersion: "Unknown"`
+        over REST. The Art API version (captured separately via WebSocket
+        in get_api_version) is the actual invariant we use for cache
+        invalidation — _matte_probe_refresh_api_version() folds it in once
+        the TV connection is established."""
         ip = (self.ip or '').strip()
         if not ip:
             return {}
@@ -2629,16 +2635,37 @@ class monitor_and_display:
             'name':             dev.get('name') or '',
             'wifi_mac':         dev.get('wifiMac') or '',
             'type':             dev.get('type') or '',
+            'api_version':      '',  # filled in by _matte_probe_refresh_api_version
         }
 
+    def _matte_probe_refresh_api_version(self):
+        """Fold the Art API version (set by get_api_version) into the
+        cached TV fingerprint. Idempotent."""
+        api_v = getattr(self, 'api_version_str', '') or ''
+        if not api_v:
+            return
+        if self._matte_probe_tv_fp is None:
+            self._matte_probe_tv_fp = {}
+        self._matte_probe_tv_fp['api_version'] = api_v
+
     def _matte_probe_fp_matches(self, a, b):
-        """Two fingerprints 'match' when their model+firmware match. Other
-        fields are diagnostic only. Empty fingerprints never match (caller
-        should treat as 'unknown' and avoid invalidating existing data)."""
+        """Two fingerprints 'match' when their model + Art API version
+        match. firmware_version is intentionally NOT compared because the
+        TV's REST endpoint commonly reports it as 'Unknown' (which would
+        silently match itself forever). If either side is missing
+        api_version (e.g. during startup before the TV WebSocket is up),
+        fall back to model-only comparison; the api_version check is
+        re-run later by _maybe_start_matte_probe once both sides are known.
+        Empty fingerprints never match."""
         if not a or not b:
             return False
-        return (a.get('model') == b.get('model')
-                and a.get('firmware_version') == b.get('firmware_version'))
+        if a.get('model') != b.get('model'):
+            return False
+        a_api = a.get('api_version') or ''
+        b_api = b.get('api_version') or ''
+        if a_api and b_api:
+            return a_api == b_api
+        return True  # model matches; api_version not yet comparable
 
     def _load_matte_blocklist(self):
         """Load /data/matte_blocklist.json. Discards the cache when the
@@ -2656,9 +2683,9 @@ class monitor_and_display:
         current_fp = self._matte_probe_tv_fp or {}
         if cached_fp and current_fp and not self._matte_probe_fp_matches(cached_fp, current_fp):
             self.log.info('Matte blocklist discarded \u2014 TV fingerprint changed '
-                          '(was %s/%s, now %s/%s)',
-                          cached_fp.get('model'), cached_fp.get('firmware_version'),
-                          current_fp.get('model'), current_fp.get('firmware_version'))
+                          '(was %s/api %s, now %s/api %s)',
+                          cached_fp.get('model'), cached_fp.get('api_version') or '?',
+                          current_fp.get('model'), current_fp.get('api_version') or '?')
             return
         # If the file is a probe-in-progress stub from a previous run that was
         # killed mid-probe, don't treat its empty bad_combos as authoritative \u2014
@@ -2735,6 +2762,9 @@ class monitor_and_display:
         multiple times."""
         if self._matte_probe_in_progress or (self._matte_probe_task and not self._matte_probe_task.done()):
             return
+        # Fold the Art API version into the fingerprint now that the TV
+        # connection is up (get_api_version has run by this point).
+        self._matte_probe_refresh_api_version()
         cached_fp = self._matte_blocklist_tv_device or {}
         current_fp = self._matte_probe_tv_fp or {}
         # If we have a cached blocklist and the fingerprint still matches, skip.
