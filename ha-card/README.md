@@ -10,9 +10,7 @@ A viewer-only [Home Assistant](https://www.home-assistant.io/) Lovelace card for
 
 > **Upgrading from v0.1.x?** See the [v0.2.0 release notes](https://github.com/kohlerryan/samsung-tv-art-card/releases/tag/v0.2.0) for breaking changes and what's new.
 
-> **Upgrading from v0.2.x?** See the [v0.3.1 release notes](https://github.com/kohlerryan/samsung-tv-art-card/releases/tag/v0.3.1) for what's new.
-
-> **Upgrading from v0.3.x?** v0.4.0 is a **viewer-only** rewrite. The in-card collection dropdown, Apply/Clear buttons, Refresh / Update & Refresh actions, MQTT subscriptions, and live progress log have all been removed. All configuration now lives in the standalone web UI — the cog opens it in a new tab. Card config keys removed: `settings_entity`, `collections_entity`, `selected_collections_entity`, `refresh_cmd_topic`, `refresh_ack_topic`, `sync_ack_topic`.
+> **Upgrading from v0.2.x or v0.3.x?** v0.4.0 is a **viewer-only** rewrite. The in-card collection dropdown, Apply/Clear buttons, Refresh / Update & Refresh actions, MQTT subscriptions, and live progress log have all been removed. All configuration now lives in the standalone web UI — the cog opens it in a new tab. Card config keys removed: `settings_entity`, `collections_entity`, `selected_collections_entity`, `refresh_cmd_topic`, `refresh_ack_topic`, `sync_ack_topic`.
 
 ---
 
