@@ -586,6 +586,19 @@ class monitor_and_display:
         # Init MQTT if enabled
         if self.mqtt_enabled:
             self._init_mqtt()
+            # Lock the UI as early as possible.  TV connect + standby + (optional)
+            # matte probe can take many seconds; without an early uploading=true
+            # signal, the web UI shows slideshow controls as available during
+            # this window (driven by the previous session's retained state).
+            # We publish discovery + slideshow_state now so the grid locks
+            # immediately on (re)connect.  These are re-published below once the
+            # full discovery suite runs; the duplicate is harmless.
+            try:
+                self._startup_in_progress = True
+                self._publish_mqtt_discovery()
+                self._publish_slideshow_state()
+            except Exception:
+                pass
         # Start periodic memory logging if enabled
         try:
             if getattr(self, 'memlog_seconds', 0) > 0:
@@ -720,8 +733,11 @@ class monitor_and_display:
             if prev is True and not in_artmode:
                 # TV just left art mode — publish sentinel with in_art_mode: False so UIs disable
                 self._publish_mqtt_state('Unavailable', 'unavailable', None)
-            elif prev is False and in_artmode:
-                # TV just re-entered art mode — immediately republish so UIs re-enable.
+            elif prev is not True and in_artmode:
+                # TV just (re-)entered art mode, or this is the first confirmed
+                # True after startup (prev=None).  Immediately republish so UIs
+                # re-enable and any stale retained in_art_mode:false from a
+                # previous session is cleared.
                 # Set _last_state_publish=0 AND do an immediate forced publish so the
                 # in_art_mode: True state is pushed to MQTT now, even if a reseed starts
                 # right after (which would set _refresh_in_progress=True and block the
@@ -817,6 +833,12 @@ class monitor_and_display:
         try:
             file_data, file_type = self.read_file(standby_path)
             if file_data and self.tv.art_mode:
+                # self.tv.art_mode is True here (last-known WebSocket state), so we
+                # know the TV is in art mode.  Record this immediately so the
+                # _publish_mqtt_state below carries in_art_mode: true instead of
+                # the stale bool(None)=false that would otherwise be retained
+                # until safe_in_artmode() finally succeeds.
+                self._in_art_mode = True
                 content_id = await self._upload_to_tv(file_data, file_type, self.matte)
                 if content_id:
                     self.standby_content_id = content_id
@@ -2310,7 +2332,12 @@ class monitor_and_display:
                 self._publish_and_wait(self.mqtt_state_topic, display or "", qos=1, retain=True)
             except Exception:
                 self._mqtt.publish(self.mqtt_state_topic, display or "", qos=0, retain=True)
-            attrs = {"file": file or "", "collection": collection or "", "in_art_mode": bool(self._in_art_mode)}
+            attrs = {"file": file or "", "collection": collection or ""}
+            # Only include in_art_mode when we actually know.  Writing False
+            # while the state is still None (unknown) retains a stale 'Not in
+            # art mode' for the web UI until the next confirmed-True transition.
+            if self._in_art_mode is not None:
+                attrs["in_art_mode"] = bool(self._in_art_mode)
             # Merge CSV columns (ensure every header key exists, even if blank)
             if self._csv_headers:
                 path_key = f"{collection}/{file}" if collection and file else None
