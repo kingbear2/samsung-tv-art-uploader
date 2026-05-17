@@ -2655,15 +2655,24 @@ class monitor_and_display:
         dev = raw.get('device') if isinstance(raw, dict) else None
         if not isinstance(dev, dict):
             return {}
-        return {
-            'model':            dev.get('modelName') or dev.get('model') or '',
-            'firmware_version': dev.get('firmwareVersion') or dev.get('version') or '',
-            'os':               dev.get('OS') or '',
-            'name':             dev.get('name') or '',
-            'wifi_mac':         dev.get('wifiMac') or '',
-            'type':             dev.get('type') or '',
-            'api_version':      '',  # filled in by _matte_probe_refresh_api_version
+        # Many Samsung Frame TVs report the literal string 'Unknown' for
+        # firmwareVersion over REST.  Treat that as missing so we don't
+        # save a noisy placeholder; real firmware strings (when reported)
+        # still flow through as diagnostic info.
+        fw = (dev.get('firmwareVersion') or dev.get('version') or '').strip()
+        if fw.lower() == 'unknown':
+            fw = ''
+        fp = {
+            'model':       dev.get('modelName') or dev.get('model') or '',
+            'os':          dev.get('OS') or '',
+            'name':        dev.get('name') or '',
+            'wifi_mac':    dev.get('wifiMac') or '',
+            'type':        dev.get('type') or '',
+            'api_version': '',  # filled in by _matte_probe_refresh_api_version
         }
+        if fw:
+            fp['firmware_version'] = fw
+        return fp
 
     def _matte_probe_refresh_api_version(self):
         """Fold the Art API version (set by get_api_version) into the

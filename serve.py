@@ -32,14 +32,21 @@ def _get_cached_tv_device_info():
                 raw = json.loads(r.read().decode('utf-8') or '{}')
             dev = raw.get('device') if isinstance(raw, dict) else None
             if isinstance(dev, dict):
+                # Many Samsung Frame TVs report firmwareVersion as the literal
+                # string 'Unknown' \u2014 suppress so we don't render a noisy
+                # placeholder in the diagnostic payload.
+                fw = (dev.get('firmwareVersion') or dev.get('version') or '').strip()
+                if fw.lower() == 'unknown':
+                    fw = ''
                 info = {
-                    'model':            dev.get('modelName') or dev.get('model') or '',
-                    'firmware_version': dev.get('firmwareVersion') or dev.get('version') or '',
-                    'os':               dev.get('OS') or '',
-                    'name':             dev.get('name') or '',
-                    'wifi_mac':         dev.get('wifiMac') or '',
-                    'type':             dev.get('type') or '',
+                    'model':    dev.get('modelName') or dev.get('model') or '',
+                    'os':       dev.get('OS') or '',
+                    'name':     dev.get('name') or '',
+                    'wifi_mac': dev.get('wifiMac') or '',
+                    'type':     dev.get('type') or '',
                 }
+                if fw:
+                    info['firmware_version'] = fw
         except Exception:
             info = {}
     _tv_device_cache['at'] = now
