@@ -265,7 +265,7 @@ class FallbackHandler(SimpleHTTPRequestHandler):
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.loads(f.read() or '{}')
         except FileNotFoundError:
-            data = {'bad_combos': [], 'probed_at': None}
+            data = {'bad_combos': [], 'probed_at': None, 'probe_in_progress': False}
         except Exception as e:
             return self._json(500, {'error': str(e)})
         current = _get_cached_tv_device_info()
@@ -278,6 +278,7 @@ class FallbackHandler(SimpleHTTPRequestHandler):
                     break
         data['current_tv_device'] = current
         data['stale'] = stale
+        data.setdefault('probe_in_progress', False)
         if stale:
             data['bad_combos'] = []
         return self._json(200, data)

@@ -2660,6 +2660,13 @@ class monitor_and_display:
                           cached_fp.get('model'), cached_fp.get('firmware_version'),
                           current_fp.get('model'), current_fp.get('firmware_version'))
             return
+        # If the file is a probe-in-progress stub from a previous run that was
+        # killed mid-probe, don't treat its empty bad_combos as authoritative \u2014
+        # leave _matte_blocklist_tv_device unset so _maybe_start_matte_probe
+        # will re-run the probe.
+        if data.get('probe_in_progress'):
+            self.log.info('Matte blocklist found in-progress stub \u2014 will re-probe')
+            return
         bad = data.get('bad_combos') or []
         # Normalize to list-of-pairs.
         normalized = []
@@ -2670,17 +2677,19 @@ class monitor_and_display:
         self._matte_blocklist_tv_device = cached_fp
         self.log.info('Loaded matte blocklist: %d rejected combo(s)', len(normalized))
 
-    def _save_matte_blocklist(self):
+    def _save_matte_blocklist(self, probe_in_progress=False):
         try:
             os.makedirs(os.path.dirname(self.matte_blocklist_path) or '.', exist_ok=True)
             payload = {
-                'tv_device':  self._matte_probe_tv_fp,
-                'bad_combos': self._matte_bad_combos,
-                'probed_at':  datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
+                'tv_device':         self._matte_probe_tv_fp,
+                'bad_combos':        self._matte_bad_combos,
+                'probe_in_progress': bool(probe_in_progress),
+                'probed_at':         None if probe_in_progress else datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
             }
             with open(self.matte_blocklist_path, 'w', encoding='utf-8') as f:
                 json.dump(payload, f, indent=2)
-            self._matte_blocklist_tv_device = dict(self._matte_probe_tv_fp or {})
+            if not probe_in_progress:
+                self._matte_blocklist_tv_device = dict(self._matte_probe_tv_fp or {})
         except Exception as e:
             self.log.warning('Failed to save matte blocklist: %s', e)
 
@@ -2759,6 +2768,11 @@ class monitor_and_display:
             if not combos:
                 self.log.warning('Matte probe: no combos to test')
                 return
+            # Write an in-progress stub immediately so the UI can show a
+            # "Probing matte support…" placeholder instead of letting the
+            # user pick combos that may be rejected.
+            self._matte_bad_combos = []
+            self._save_matte_blocklist(probe_in_progress=True)
             original_matte = await self._matte_probe_current_matte(content_id)
             self.log.info('Matte probe starting: %d combos against %s', len(combos), content_id)
             bad_combos = []

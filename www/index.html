@@ -1823,17 +1823,21 @@
     const slideshowMatteBlocklist = {
       probed: false,
       stale: false,
+      probeInProgress: false,
       badCombos: new Set(),      // Set of `${type}_${color}` keys
       probedTvDevice: null,
       currentTvDevice: null,
     };
+    let _matteBlocklistPollTimer = null;
     async function loadMatteBlocklist() {
       try {
         const r = await fetch('/api/matte_blocklist', { cache: 'no-store' });
         if (!r.ok) return;
         const d = await r.json();
+        const wasProbing = slideshowMatteBlocklist.probeInProgress;
         slideshowMatteBlocklist.probed = !!(d && d.probed_at);
         slideshowMatteBlocklist.stale = !!(d && d.stale);
+        slideshowMatteBlocklist.probeInProgress = !!(d && d.probe_in_progress);
         slideshowMatteBlocklist.probedTvDevice = (d && d.tv_device) || null;
         slideshowMatteBlocklist.currentTvDevice = (d && d.current_tv_device) || null;
         const bad = ((d && d.bad_combos) || []).map(([t, c]) => _comboKey(t, c));
@@ -1842,7 +1846,52 @@
           console.warn('Matte blocklist marked stale (TV firmware changed); waiting for re-probe',
             slideshowMatteBlocklist.probedTvDevice, '->', slideshowMatteBlocklist.currentTvDevice);
         }
+        // While probing, poll every 10s and refresh the modal if it's open
+        // so the dropdown unlocks the moment the probe finishes.
+        if (slideshowMatteBlocklist.probeInProgress) {
+          _scheduleMatteBlocklistPoll();
+        } else if (wasProbing) {
+          // Just finished — re-render the modal's dropdown with the now-known
+          // option list (the modal pre-built it empty at open time).
+          if (_slModalEl) _rebuildSlModalMatteOptions();
+        }
       } catch (e) { /* ignore */ }
+    }
+    function _scheduleMatteBlocklistPoll() {
+      if (_matteBlocklistPollTimer) return;
+      _matteBlocklistPollTimer = setTimeout(async () => {
+        _matteBlocklistPollTimer = null;
+        await loadMatteBlocklist();
+        if (slideshowMatteBlocklist.probeInProgress) _scheduleMatteBlocklistPoll();
+      }, 10000);
+    }
+    function _rebuildSlModalMatteOptions() {
+      if (!_slModalEl) return;
+      const $sel = _slModalEl.querySelector('#sl-modal-matte');
+      if (!$sel) return;
+      if (slideshowMatteBlocklist.probeInProgress) {
+        $sel.innerHTML = '<option value="__probing__">Probing matte support\u2026</option>';
+        $sel.disabled = true;
+        $sel.title = 'Matte probe is still running; please wait';
+        return;
+      }
+      const cur = _slModalList && _slModalList[_slModalIdx];
+      const want = (cur && slideshowMattes[cur.path]) || 'none';
+      $sel.innerHTML = matteOptionList().map(m => {
+        const label = (m === 'none') ? 'none' : m;
+        return `<option value="${escapeHtml(m)}">${escapeHtml(label)}</option>`;
+      }).join('');
+      $sel.disabled = false;
+      $sel.title = '';
+      let found = false;
+      for (const opt of $sel.options) {
+        if (opt.value === want) { opt.selected = true; found = true; break; }
+      }
+      if (!found) {
+        for (const opt of $sel.options) {
+          if (opt.value === 'none') { opt.selected = true; break; }
+        }
+      }
     }
     function matteOptionList() {
       // Single global list. Always includes 'none' (the reset path; never
@@ -2015,15 +2064,29 @@
       }
       const $matteSel = _slModalEl.querySelector('#sl-modal-matte');
       if ($matteSel) {
-        const want = curMatte || 'none';
-        // Walk options to find a match (curMatte may be '' which means "none").
-        let found = false;
-        for (const opt of $matteSel.options) {
-          if (opt.value === want) { opt.selected = true; found = true; break; }
-        }
-        if (!found) {
+        if (slideshowMatteBlocklist.probeInProgress) {
+          $matteSel.innerHTML = '<option value="__probing__">Probing matte support…</option>';
+          $matteSel.disabled = true;
+          $matteSel.title = 'Matte probe is still running; please wait';
+        } else {
+          if ($matteSel.disabled) {
+            // Coming out of probing state on a navigation — rebuild options.
+            $matteSel.innerHTML = matteOptionList().map(m => {
+              const label = (m === 'none') ? 'none' : m;
+              return `<option value="${escapeHtml(m)}">${escapeHtml(label)}</option>`;
+            }).join('');
+            $matteSel.disabled = false;
+            $matteSel.title = '';
+          }
+          const want = curMatte || 'none';
+          let found = false;
           for (const opt of $matteSel.options) {
-            if (opt.value === 'none') { opt.selected = true; break; }
+            if (opt.value === want) { opt.selected = true; found = true; break; }
+          }
+          if (!found) {
+            for (const opt of $matteSel.options) {
+              if (opt.value === 'none') { opt.selected = true; break; }
+            }
           }
         }
       }
@@ -2049,10 +2112,12 @@
       _slModalList = list;
       _slModalIdx = index;
       const img = list[index];
-      const matteOptsHtml = matteOptionList().map(m => {
-        const label = (m === 'none') ? 'none' : m;
-        return `<option value="${escapeHtml(m)}">${escapeHtml(label)}</option>`;
-      }).join('');
+      const matteOptsHtml = slideshowMatteBlocklist.probeInProgress
+        ? '<option value="__probing__">Probing matte support…</option>'
+        : matteOptionList().map(m => {
+            const label = (m === 'none') ? 'none' : m;
+            return `<option value="${escapeHtml(m)}">${escapeHtml(label)}</option>`;
+          }).join('');
       const overlay = document.createElement('div');
       overlay.className = 'sl-modal-overlay';
       overlay.innerHTML = `
@@ -2096,6 +2161,7 @@
         const cur = _slModalList[_slModalIdx];
         if (!cur) return;
         const val = $matteSel.value || '';
+        if (val === '__probing__') return;  // placeholder while probing — ignore
         if (val === '__default__') delete slideshowMattes[cur.path];
         else slideshowMattes[cur.path] = val;
         publishMatte(cur.path, val);
