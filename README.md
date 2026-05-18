@@ -8,7 +8,7 @@ Built on top of [NickWaterton/samsung-tv-ws-api](https://github.com/NickWaterton
 
 | Home Assistant Card | Web UI |
 |---|---|
-| ![HA Card](assets/hacard_fixed_v0.2.1.png) | ![Web UI](assets/webui_now_showing_v0.2.2.png) |
+| ![HA Card](assets/hacard_v0.4.0.png) | ![Web UI](assets/webui_now_showing_v0.2.2.png) |
 
 > **Upgrading from v0.1.x?** See the [v0.2.0 release notes](https://github.com/kohlerryan/samsung-tv-art-uploader/releases/tag/v0.2.0) for breaking changes and what's new.
 
@@ -24,7 +24,7 @@ Built on top of [NickWaterton/samsung-tv-ws-api](https://github.com/NickWaterton
 - **Saved Selections** — name and save any image set as a preset; synced across all clients via retained MQTT; auto-generates thematic defaults (Landscapes, Marine, Impressionism, etc.) on first start
 - **Per-collection carousels** with S/M/L thumbnail size controls and a shuffle preview mode
 - **Drag-and-drop ordering** — reorder hand-picked images in the Selected overview to control sequential playback order; ordinal badges (1, 2, 3…) show the current order
-- **Per-image passepartout (matte)** — pick a matte type and color per image directly from each thumbnail in the slideshow grid; overrides persist to disk and are applied on next upload, or live-applied via `change_matte` if the image is already on the TV. Falls back to the global `MATTE`/`PORTRAIT_MATTE` defaults from the env when no override is set
+- **Per-image matte** — pick a matte type and color per image from a large-preview modal. Type is a dropdown, colors are circular swatches sorted lightest-→-darkest with the selected one outlined; the palette is calibrated from photographs of real Frame TV mattes for accurate previews. Overrides persist to disk and are applied on next upload, or live-applied via `change_matte` if the image is already on the TV. Falls back to the global `MATTE`/`PORTRAIT_MATTE` defaults from the env when no override is set
 - **Large preview modal** (web UI) — double-click any thumbnail to open a near-full-screen preview with a higher-fidelity matte simulation and an inline matte/selection picker, then close with Esc or click outside
 - **In-progress autosave** (web UI) — the unapplied selection and max-uploads count are stored to `localStorage` so a browser refresh or accidental tab close doesn't lose work; auto-cleared once you Apply or Reset
 - [Home Assistant Lovelace card](https://github.com/kohlerryan/samsung-tv-art-card) with live progress display during refresh operations
@@ -319,12 +319,16 @@ When `SAMSUNG_TV_ART_LOCAL_WEB=true`, a web interface is available at `http://sa
 |---|---|
 | ![Web UI Now Showing](assets/webui_now_showing_v0.2.2.png) | ![Web UI Settings](assets/webui_settings_v0.2.3.png) |
 
-| Slideshow Override | Mobile |
+| Slideshow Override | Matte Picker (preview modal) |
 |---|---|
-| ![Web UI Slideshow](assets/webui_slideshow_v0.3.0.png) | ![Web UI Mobile](assets/webui_mobile_now_showing_v0.2.2.png) |
+| ![Web UI Slideshow](assets/webui_slideshow_v0.4.0.png) | ![Web UI Modal Matte Picker](assets/webui_modal_matte_v0.4.0.png) |
+
+| Mobile | |
+|---|---|
+| ![Web UI Mobile](assets/webui_mobile_now_showing_v0.2.2.png) | |
 
 - **Collections** tab — select which collections are active and trigger a refresh
-- **Slideshow** tab — browse available images in per-collection carousels (S/M/L size), hand-pick a fixed set to pin to the TV, **drag thumbnails in the Selected overview to control sequential playback order** (numbered badges show current order), shuffle for a preview before committing, and manage named **Saved Selections** that sync across all clients via MQTT. A small status badge above the controls indicates pending changes: **● Preview** (amber) when a Shuffle preview is loaded but not applied, **● Modified** (blue) when your selection differs from what's currently on the TV
+- **Slideshow** tab — browse available images in per-collection carousels (S/M/L size). **In a collection carousel, single-click a thumbnail to open the large preview modal** (where you can pick the matte type and color); the corner checkmark adds or removes the image from the selection. **In the Selected overview, double-click a thumbnail to open the preview** (single-click is reserved for drag-start) and **drag thumbnails to control sequential playback order** (numbered badges show current order). Shuffle for a preview before committing, and manage named **Saved Selections** that sync across all clients via MQTT. A small status badge above the controls indicates pending changes: **● Preview** (amber) when a Shuffle preview is loaded but not applied, **● Modified** (blue) when your selection differs from what's currently on the TV
 - **Settings** tab — adjust MQTT/TV connection settings without restarting the container; includes a **Preload thumbnails** toggle (off by default) that eagerly fetches all slideshow images instead of loading them as you scroll. Action buttons are automatically disabled (with an explanatory message) when the TV is not in Art Mode, and show in-progress text while a command is pending
 - **Now Showing metadata** — the artwork info section (artist, title, description) scrolls when content overflows; a soft fade at the bottom of the section indicates more content is available below
 
@@ -337,11 +341,9 @@ See [`ha-card/README.md`](ha-card/README.md) for installation steps and [`exampl
 
 | Card — Fixed | Card — Not in Art Mode |
 |---|---|
-| ![HA Card](assets/hacard_fixed_v0.2.1.png) | ![HA Card Not in Art Mode](assets/hacard_art_mode_off_v0.2.1.png) |
+| ![HA Card](assets/hacard_v0.4.0.png) | ![HA Card Not in Art Mode](assets/hacard_art_mode_off_v0.2.1.png) |
 
-| Card — Slideshow Override | Card — Settings |
-|---|---|
-| ![HA Card Slideshow](assets/hacard_slideshow_v0.3.0.png) | ![HA Card Settings](assets/hacard_settings_v0.2.2.png) |
+> **v0.4.0:** the HA card is now **viewer-only** — collection selection, slideshow editing, matte pickers, presets, and settings have all moved to the web UI. The cog in the card header opens the web UI in a new tab. See [`ha-card/README.md`](ha-card/README.md) for the full migration notes.
 
 ### Mixed-content / image URLs
 

@@ -376,7 +376,7 @@ class monitor_and_display:
         self.mqtt_slideshow_presets_topic = os.environ.get('SAMSUNG_TV_ART_MQTT_SLIDESHOW_PRESETS', 'frame_tv/slideshow/presets')
         self.slideshow_presets_path = '/data/slideshow_presets.json'
         self._slideshow_presets = []  # in-memory cache, source of truth for republish
-        # Per-image passepartout (matte) overrides — stored {path_rel: matte_id}
+        # Per-image matte overrides — stored {path_rel: matte_id}
         self.mqtt_slideshow_mattes_topic = os.environ.get('SAMSUNG_TV_ART_MQTT_SLIDESHOW_MATTES', 'frame_tv/slideshow/mattes')
         self.mqtt_slideshow_matte_options_topic = os.environ.get('SAMSUNG_TV_ART_MQTT_SLIDESHOW_MATTE_OPTIONS', 'frame_tv/slideshow/matte_options')
         self.matte_overrides_path = '/data/matte_overrides.json'
@@ -2536,7 +2536,7 @@ class monitor_and_display:
         except Exception as e:
             self.log.warning('Failed to save slideshow presets: %s', e)
 
-    # ── Per-image matte (passepartout) overrides ───────────────────────────
+    # ── Per-image matte overrides ───────────────────────────────────────────
 
     def _load_matte_overrides(self):
         """Load persisted per-image matte overrides from disk."""
@@ -3539,22 +3539,31 @@ class monitor_and_display:
                     self._publish_ack('slideshow/presets/set', 'error', str(e), req_id)
                 return
             if cmd == 'slideshow/presets/generate':
-                try:
-                    generated = self._generate_default_presets()
-                    if not generated:
-                        self._publish_ack('slideshow/presets/generate', 'error', 'No images found', req_id)
-                        return
-                    self._save_slideshow_presets(generated)
-                    self._mqtt.publish(
-                        self.mqtt_slideshow_presets_topic,
-                        json.dumps(generated),
-                        qos=1,
-                        retain=True,
-                    )
-                    self._publish_ack('slideshow/presets/generate', 'ok',
-                                      f'{len(generated)} preset(s) generated', req_id)
-                except Exception as e:
-                    self._publish_ack('slideshow/presets/generate', 'error', str(e), req_id)
+                # Offload to the event loop (and a thread executor for the CPU/IO
+                # work) so we never block paho's network loop thread — a long
+                # callback here can starve the MQTT keepalive and trigger a
+                # broker disconnect ([Errno 32] Broken pipe).
+                async def _do_generate_presets():
+                    try:
+                        loop = asyncio.get_running_loop()
+                        generated = await loop.run_in_executor(None, self._generate_default_presets)
+                        if not generated:
+                            self._publish_ack('slideshow/presets/generate', 'error', 'No images found', req_id)
+                            return
+                        self._save_slideshow_presets(generated)
+                        self._mqtt.publish(
+                            self.mqtt_slideshow_presets_topic,
+                            json.dumps(generated),
+                            qos=1,
+                            retain=True,
+                        )
+                        self._publish_ack('slideshow/presets/generate', 'ok',
+                                          f'{len(generated)} preset(s) generated', req_id)
+                    except Exception as e:
+                        self._publish_ack('slideshow/presets/generate', 'error', str(e), req_id)
+                fut = self._schedule_command_coro(_do_generate_presets(), 'slideshow/presets/generate')
+                if not fut:
+                    self._publish_ack('slideshow/presets/generate', 'error', 'Failed to queue preset generation', req_id)
                 return
             if cmd == 'slideshow/override/clear':
                 self.slideshow_override = None
@@ -3564,7 +3573,7 @@ class monitor_and_display:
                 self._publish_ack('slideshow/override/clear', 'ok', 'Slideshow override cleared; auto mode restored', req_id)
                 return
             if cmd == 'slideshow/matte/set':
-                # Set or clear per-image matte (passepartout). Persists to disk and,
+                # Set or clear per-image matte. Persists to disk and,
                 # if the image is currently uploaded to the TV, applies live via change_matte.
                 try:
                     if not isinstance(data, dict):

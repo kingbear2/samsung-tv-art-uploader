@@ -203,6 +203,11 @@
       transition: background 0.15s, border-color 0.15s;
       cursor: pointer;
     }
+    /* Unselected hover affordance — hints that clicking the circle adds the
+       image to the selection (clicking the thumb itself does nothing now). */
+    .sl-thumb:not(.selected) .sl-thumb-check:hover {
+      background: rgba(47,127,191,0.55); border-color: #2f7fbf;
+    }
     .sl-thumb.selected .sl-thumb-check { background: #2f7fbf; border-color: #2f7fbf; }
     .sl-thumb.selected .sl-thumb-check:hover { background: #c84a4a; border-color: #c84a4a; }
     /* Selected-overview thumbs are draggable to control playback order */
@@ -308,6 +313,30 @@
       border: 1px solid #4a3d37; border-radius: 5px;
       min-width: 200px;
     }
+    /* Color picker: row of circular swatch buttons. Selected one gets an
+       outline ring so the active color is visible at a glance. */
+    .sl-modal-controls .sl-matte-swatches {
+      display: flex; flex-wrap: wrap; gap: 6px;
+      align-items: center;
+    }
+    .sl-modal-controls .sl-matte-swatches.disabled { opacity: 0.4; pointer-events: none; }
+    .sl-modal-controls .sl-matte-swatch {
+      width: 22px; height: 22px; border-radius: 50%;
+      padding: 0; cursor: pointer;
+      background-color: var(--swatch, #888);
+      border: 1px solid rgba(255,255,255,0.25);
+      box-shadow: inset 0 0 0 1px rgba(0,0,0,0.35);
+      transition: transform 0.08s ease;
+    }
+    .sl-modal-controls .sl-matte-swatch:hover { transform: scale(1.12); }
+    .sl-modal-controls .sl-matte-swatch.selected {
+      outline: 2px solid #6ab0f5;
+      outline-offset: 2px;
+      border-color: #fff;
+    }
+    .sl-modal-controls .sl-matte-swatches .sl-matte-empty {
+      font-size: 12px; color: #6a605a; font-style: italic;
+    }
     .sl-modal-controls .sl-modal-toggle {
       font-size: 12px; font-weight: 600;
       padding: 6px 14px; cursor: pointer;
@@ -318,7 +347,7 @@
       background: rgba(47,127,191,0.25); border-color: #2f7fbf; color: #6ab0f5;
     }
     .sl-modal-controls .sl-modal-toggle:hover { border-color: #6ab0f5; color: #fff; }
-    /* Per-image matte (passepartout) picker — bottom-right of each thumb */
+    /* Per-image matte picker — bottom-right of each thumb */
     .sl-thumb-matte {
       position: absolute; right: 3px; bottom: 3px;
       max-width: 70%;
@@ -1793,7 +1822,7 @@
     // ── Saved Presets (MQTT-backed, retained on frame_tv/slideshow/presets) ────────────
     const SL_PRESETS_KEY = 'sl-presets'; // kept for migration only
     let slideshowPresets = [];
-    // ── Per-image matte (passepartout) overrides ──────────────────────────────────────
+    // ── Per-image matte overrides ──────────────────────────────────────────
     let slideshowMattes = {};                // { path_rel: matte_id }
     let slideshowMatteTypes = [];            // available matte type names from TV
     let slideshowMatteColors = [];           // available matte color names from TV
@@ -1867,31 +1896,58 @@
     }
     function _rebuildSlModalMatteOptions() {
       if (!_slModalEl) return;
-      const $sel = _slModalEl.querySelector('#sl-modal-matte');
-      if (!$sel) return;
-      if (slideshowMatteBlocklist.probeInProgress) {
-        $sel.innerHTML = '<option value="__probing__">Probing matte support\u2026</option>';
-        $sel.disabled = true;
-        $sel.title = 'Matte probe is still running; please wait';
-        return;
-      }
       const cur = _slModalList && _slModalList[_slModalIdx];
       const want = (cur && slideshowMattes[cur.path]) || 'none';
-      $sel.innerHTML = matteOptionList().map(m => {
-        const label = (m === 'none') ? 'none' : m;
-        return `<option value="${escapeHtml(m)}">${escapeHtml(label)}</option>`;
+      _populateMatteSelects(want);
+    }
+    // Populate both the type and color selects, then select `wantId` (or its
+    // closest match) and reflect the chosen swatch on the color select bg.
+    function _populateMatteSelects(wantId) {
+      if (!_slModalEl) return;
+      const $type = _slModalEl.querySelector('#sl-modal-matte-type');
+      const $color = _slModalEl.querySelector('#sl-modal-matte-color');
+      if (!$type || !$color) return;
+      if (slideshowMatteBlocklist.probeInProgress) {
+        $type.innerHTML = '<option value="__probing__">Probing matte support…</option>';
+        $color.innerHTML = '<span class="sl-matte-empty">…</span>';
+        $type.disabled = true;
+        $color.classList.add('disabled');
+        $color.dataset.color = '';
+        $type.title = 'Matte probe is still running; please wait';
+        return;
+      }
+      $type.disabled = false; $type.title = '';
+      const want = _splitMatteId(wantId || 'none');
+      const types = matteTypeOptions();
+      $type.innerHTML = types.map(t =>
+        `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+      const wantType = types.includes(want.type) ? want.type : 'none';
+      $type.value = wantType;
+      _populateMatteColorSelect(wantType, want.color);
+    }
+    function _populateMatteColorSelect(type, wantColor) {
+      if (!_slModalEl) return;
+      const $color = _slModalEl.querySelector('#sl-modal-matte-color');
+      if (!$color) return;
+      const colors = matteColorOptionsFor(type);
+      if (!colors.length) {
+        $color.innerHTML = '<span class="sl-matte-empty">(no color)</span>';
+        $color.classList.add('disabled');
+        $color.dataset.color = '';
+        return;
+      }
+      $color.classList.remove('disabled');
+      // Pick wantColor if valid for this type; otherwise first alphabetical.
+      const pick = (wantColor && colors.includes(wantColor)) ? wantColor : colors[0];
+      $color.dataset.color = pick;
+      $color.innerHTML = colors.map(c => {
+        const hex = _matteColorHex(c);
+        const sel = (c === pick) ? ' selected' : '';
+        return `<button type="button" class="sl-matte-swatch${sel}" `
+             + `role="radio" aria-checked="${c === pick}" `
+             + `data-color="${escapeHtml(c)}" title="${escapeHtml(c)}" `
+             + `style="--swatch:${hex}"></button>`;
       }).join('');
-      $sel.disabled = false;
-      $sel.title = '';
-      let found = false;
-      for (const opt of $sel.options) {
-        if (opt.value === want) { opt.selected = true; found = true; break; }
-      }
-      if (!found) {
-        for (const opt of $sel.options) {
-          if (opt.value === 'none') { opt.selected = true; break; }
-        }
-      }
     }
     function matteOptionList() {
       // Single global list. Always includes 'none' (the reset path; never
@@ -1913,6 +1969,58 @@
       }
       return opts;
     }
+    // ----- Split (type, color) helpers for the two-select picker -----
+    function _splitMatteId(id) {
+      if (!id || id === 'none' || id === '__default__') return { type: 'none', color: '' };
+      const i = id.indexOf('_');
+      if (i < 0) return { type: id, color: '' };
+      return { type: id.slice(0, i), color: id.slice(i + 1) };
+    }
+    function _joinMatteId(type, color) {
+      if (!type || type === 'none') return 'none';
+      if (!color) return 'none';
+      return `${type}_${color}`;
+    }
+    function matteTypeOptions() {
+      // 'none' first, then sorted unique types that have at least one valid
+      // color combo (not entirely blocklisted).
+      const bad = slideshowMatteBlocklist.badCombos;
+      const types = (slideshowMatteTypes && slideshowMatteTypes.length) ? slideshowMatteTypes
+        : ['shadowbox', 'modern', 'flexible'];
+      const colors = (slideshowMatteColors && slideshowMatteColors.length) ? slideshowMatteColors
+        : ['polar', 'neutral', 'apricot'];
+      const out = ['none'];
+      const seen = new Set(['none']);
+      for (const t of [...types].sort()) {
+        if (!t || seen.has(t)) continue;
+        // Keep only types with ≥1 non-blocklisted color
+        const ok = colors.some(c => c && !bad.has(_comboKey(t, c)));
+        if (!ok) continue;
+        seen.add(t);
+        out.push(t);
+      }
+      return out;
+    }
+    function matteColorOptionsFor(type) {
+      if (!type || type === 'none') return [];
+      const bad = slideshowMatteBlocklist.badCombos;
+      const colors = (slideshowMatteColors && slideshowMatteColors.length) ? slideshowMatteColors
+        : ['polar', 'neutral', 'apricot'];
+      // Sort lightest → darkest using perceived luminance of the swatch hex.
+      // Default pick (colors[0]) is therefore the lightest available color.
+      return [...colors]
+        .filter(c => c && !bad.has(_comboKey(type, c)))
+        .sort((a, b) => _matteColorLuminance(b) - _matteColorLuminance(a));
+    }
+    // Perceived luminance of a color name's swatch (0=black, 1=white).
+    // Uses Rec. 709 coefficients on the sRGB hex from _MATTE_COLOR_MAP.
+    function _matteColorLuminance(name) {
+      const hex = _matteColorHex(name) || '#888888';
+      const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+      if (!m) return 0.5;
+      const r = parseInt(m[1], 16), g = parseInt(m[2], 16), b = parseInt(m[3], 16);
+      return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+    }
     // Visual hints for the on-thumbnail matte color preview.
     // Hex approximations of the Samsung Frame matte palette. If you spot one
     // that doesn't match what your TV shows, please open an issue with the
@@ -1923,33 +2031,36 @@
       white:    '#fafaf6',
       ivory:    '#f1e6c8',
       cotton:   '#ece1cc',
-      neutral:  '#cfc7b4',
-      sand:     '#d2bf95',
-      antique:  '#ece3d2',
+      neutral:  '#5d5f64',
+      sand:     '#a29a90',
+      antique:  '#a5a7a0',
       // Black / grays.
-      black:    '#141414',
+      black:    '#1f2021',
       tinsel:   '#a8a8a6',
       // Reds / oranges / pinks.
-      apricot:  '#e8783c',
+      apricot:  '#dcbc7d',
       coral:    '#f06848',
-      redorange:'#d44a26',
-      byzantine:'#9a1a26',
-      burgundy: '#5a1020',
-      burgandy: '#5a1020',  // Samsung's API misspelling of 'burgundy'
+      redorange:'#d57c6e',
+      byzantine:'#b387d6',
+      burgundy: '#5b3d4c',
+      burgandy: '#5b3d4c',  // Samsung's API misspelling of 'burgundy'
       flamingo: '#e88a98',
       dusty:    '#b97a86',
       // Greens.
       mint:     '#bfe2c0',
-      seafoam:  '#9ad4c2',
+      seafoam:  '#5c6269',
       moss:     '#7a986a',
-      sage:     '#a8b89a',
+      sage:     '#6a7069',
       // Blues.
       sky:      '#a4c8e3',
+      skyblue:  '#6eb7c6',
       powder:   '#c0d8e8',
+      navy:     '#464d6c',
+      turquoise:'#77c0c0',
       // Purples.
-      lavender: '#cbc1e3',
+      lavender: '#a6a3a3',
       // Warm neutral (cream / beige).
-      warm:     '#e8d6b8',
+      warm:     '#dce1d0',
     };
     const _MATTE_UNKNOWN_WARNED = new Set();
     function _matteColorHex(name) {
@@ -2062,33 +2173,9 @@
           + (img.year ? ' &middot; ' + escapeHtml(String(img.year)) : '')
           + ` <span style="opacity:0.6; margin-left:6px;">(${_slModalIdx + 1} / ${_slModalList.length})</span>`;
       }
-      const $matteSel = _slModalEl.querySelector('#sl-modal-matte');
+      const $matteSel = _slModalEl.querySelector('#sl-modal-matte-type');
       if ($matteSel) {
-        if (slideshowMatteBlocklist.probeInProgress) {
-          $matteSel.innerHTML = '<option value="__probing__">Probing matte support…</option>';
-          $matteSel.disabled = true;
-          $matteSel.title = 'Matte probe is still running; please wait';
-        } else {
-          if ($matteSel.disabled) {
-            // Coming out of probing state on a navigation — rebuild options.
-            $matteSel.innerHTML = matteOptionList().map(m => {
-              const label = (m === 'none') ? 'none' : m;
-              return `<option value="${escapeHtml(m)}">${escapeHtml(label)}</option>`;
-            }).join('');
-            $matteSel.disabled = false;
-            $matteSel.title = '';
-          }
-          const want = curMatte || 'none';
-          let found = false;
-          for (const opt of $matteSel.options) {
-            if (opt.value === want) { opt.selected = true; found = true; break; }
-          }
-          if (!found) {
-            for (const opt of $matteSel.options) {
-              if (opt.value === 'none') { opt.selected = true; break; }
-            }
-          }
-        }
+        _populateMatteSelects(curMatte || 'none');
       }
       const $toggle = _slModalEl.querySelector('.sl-modal-toggle');
       if ($toggle) {
@@ -2112,12 +2199,7 @@
       _slModalList = list;
       _slModalIdx = index;
       const img = list[index];
-      const matteOptsHtml = slideshowMatteBlocklist.probeInProgress
-        ? '<option value="__probing__">Probing matte support…</option>'
-        : matteOptionList().map(m => {
-            const label = (m === 'none') ? 'none' : m;
-            return `<option value="${escapeHtml(m)}">${escapeHtml(label)}</option>`;
-          }).join('');
+      const matteOptsHtml = '';  // unused — selects are populated by _populateMatteSelects()
       const overlay = document.createElement('div');
       overlay.className = 'sl-modal-overlay';
       overlay.innerHTML = `
@@ -2133,8 +2215,9 @@
           </div>
           <div class="sl-modal-meta"></div>
           <div class="sl-modal-controls">
-            <label for="sl-modal-matte">Matte:</label>
-            <select id="sl-modal-matte">${matteOptsHtml}</select>
+            <label for="sl-modal-matte-type">Matte:</label>
+            <select id="sl-modal-matte-type"></select>
+            <div id="sl-modal-matte-color" class="sl-matte-swatches" role="radiogroup" aria-label="Matte color"></div>
             <button type="button" class="sl-modal-toggle">Add to selection</button>
           </div>
         </div>`;
@@ -2156,18 +2239,43 @@
 
       // Matte change → publish, update local map, refresh modal preview AND grid.
       // Always operates on the CURRENTLY DISPLAYED image (idx may have advanced).
-      const $matteSel = overlay.querySelector('#sl-modal-matte');
-      $matteSel.addEventListener('change', () => {
+      const $matteType  = overlay.querySelector('#sl-modal-matte-type');
+      const $matteColor = overlay.querySelector('#sl-modal-matte-color');
+      // Initial population based on current image's stored matte.
+      const _initCur = list[index];
+      _populateMatteSelects((_initCur && slideshowMattes[_initCur.path]) || 'none');
+      function _commitMatteChange() {
         const cur = _slModalList[_slModalIdx];
         if (!cur) return;
-        const val = $matteSel.value || '';
-        if (val === '__probing__') return;  // placeholder while probing — ignore
-        if (val === '__default__') delete slideshowMattes[cur.path];
+        const tval = $matteType.value || 'none';
+        if (tval === '__probing__') return;
+        const cval = $matteColor.dataset.color || '';
+        const val = _joinMatteId(tval, cval);
+        if (val === 'none') delete slideshowMattes[cur.path];
         else slideshowMattes[cur.path] = val;
         publishMatte(cur.path, val);
         const $preview = overlay.querySelector('.sl-modal-matte-preview');
         if ($preview) $preview.setAttribute('style', matteCssForModal(slideshowMattes[cur.path] || ''));
         renderSlideshowGrid();
+      }
+      $matteType.addEventListener('change', () => {
+        // Repopulate color list for the new type (defaults to first alpha color).
+        _populateMatteColorSelect($matteType.value, null);
+        _commitMatteChange();
+      });
+      // Delegated click: swatch buttons set the picked color, then commit.
+      $matteColor.addEventListener('click', (e) => {
+        const btn = e.target.closest('.sl-matte-swatch');
+        if (!btn || $matteColor.classList.contains('disabled')) return;
+        const c = btn.dataset.color || '';
+        if (!c || c === $matteColor.dataset.color) return;
+        $matteColor.dataset.color = c;
+        $matteColor.querySelectorAll('.sl-matte-swatch').forEach(b => {
+          const on = (b === btn);
+          b.classList.toggle('selected', on);
+          b.setAttribute('aria-checked', on ? 'true' : 'false');
+        });
+        _commitMatteChange();
       });
 
       // Toggle selection from the modal — operates on currently displayed image.
@@ -2639,7 +2747,7 @@
         return `<div class="sl-thumb${isSel ? ' selected' : ''}${draggableCls}" data-path="${escapeHtml(img.path)}"${draggableAttr} title="Double-click to preview / change matte">
           <img data-src="${thumbUrl}" alt="${escapeHtml(img.title || img.file)}" onerror="this.style.display='none'">
           ${matteOverlay}
-          <div class="sl-thumb-check" data-check-for="${escapeHtml(img.path)}" title="${isSel ? 'Click to deselect' : ''}">${isSel ? '\u2713' : ''}</div>
+          <div class="sl-thumb-check" data-check-for="${escapeHtml(img.path)}" title="${isSel ? 'Click to deselect' : 'Click to select'}">${isSel ? '\u2713' : ''}</div>
           ${ordHtml}
         </div>`;
       }
@@ -2759,86 +2867,93 @@
         });
       });
 
-      // Thumb click: select only (does NOT deselect — use the corner checkmark to remove).
+      // Thumb click behavior:
+      //   * Collection carousel thumbs (NOT .sl-draggable): single-click opens
+      //     the preview modal. There's no drag interaction here, so requiring
+      //     a double-click was not discoverable.
+      //   * Selected-overview thumbs (.sl-draggable): single-click is a no-op
+      //     so a click-and-drag start doesn't accidentally trigger anything;
+      //     double-click opens the preview modal.
+      // In both cases the corner checkmark is the only path to toggle
+      // selection (clicks bubble up through their own handler first).
+      const _openModalForThumb = (el) => {
+        const path = el.dataset.path;
+        if (!path) return;
+        const $body = el.closest('.sl-coll-body');
+        const containerId = $body && $body.id;
+        let list = [];
+        if (containerId === 'sl-cc-sel') {
+          list = selectedImgs.slice();
+        } else if (containerId && containerId.startsWith('sl-cc-')) {
+          const ci = parseInt(containerId.substring(6), 10);
+          const k = sortedKeys[ci];
+          if (k) list = (collMap.get(k) || []).slice();
+        }
+        let idx = list.findIndex(i => i.path === path);
+        if (idx < 0) {
+          const ls = path.lastIndexOf('/');
+          const folder = ls > 0 ? path.substring(0, ls) : '';
+          const file = ls >= 0 ? path.substring(ls + 1) : path;
+          const fallbackImg = (slideshowAvailable.find(i => i.path === path))
+            || { path, folder, file, title: '', artist: folder, year: '' };
+          list = [fallbackImg];
+          idx = 0;
+        }
+        openSlideshowModal(list, idx);
+      };
       $slGrid.querySelectorAll('.sl-thumb').forEach(el => {
         el.addEventListener('click', (e) => {
-          if (slideshowUploading) return;
-          // Clicks on the checkmark have their own handler.
-          if (e.target && e.target.closest && e.target.closest('.sl-thumb-check')) return;
-          if (slideshowPreviewMode) {
-            slideshowPreviewMode = false;
-            const $shuf = document.getElementById('sl-preview-shuffle');
-            if ($shuf) $shuf.textContent = 'Shuffle';
-          }
-          const path = el.dataset.path;
-          if (slideshowSelected.has(path)) return; // single-click no longer deselects
-          slideshowSelected.add(path);
-          const newCount = slideshowSelected.size;
-          if (newCount > 0) {
-            slideshowMaxUploads = newCount;
-            if ($slMaxUploads && !$slMaxUploads.dataset.dirty) $slMaxUploads.value = newCount;
-          }
-          updateSlCounter();
-          renderSlideshowGrid();
+          // Let nested controls (checkmark, matte badge) handle their own clicks.
+          if (e.target && e.target.closest && e.target.closest('.sl-thumb-check, .sl-thumb-matte')) return;
+          // Selected-overview thumbs are draggable — single-click is inert
+          // there so a drag-start doesn't trigger the modal.
+          if (el.classList.contains('sl-draggable')) return;
+          e.preventDefault();
+          _openModalForThumb(el);
         });
       });
 
-      // Checkmark click: only deselects (when the thumb is selected).
+      // Checkmark click: toggles selection. The thumb itself no longer reacts
+      // to plain clicks, so this is the only path to add or remove an image.
       $slGrid.querySelectorAll('.sl-thumb-check').forEach(el => {
         el.addEventListener('click', (e) => {
           e.stopPropagation();
           if (slideshowUploading) return;
           const path = el.dataset.checkFor;
-          if (!path || !slideshowSelected.has(path)) return;
+          if (!path) return;
           if (slideshowPreviewMode) {
             slideshowPreviewMode = false;
             const $shuf = document.getElementById('sl-preview-shuffle');
             if ($shuf) $shuf.textContent = 'Shuffle';
           }
-          slideshowSelected.delete(path);
+          if (slideshowSelected.has(path)) {
+            slideshowSelected.delete(path);
+          } else {
+            slideshowSelected.add(path);
+            const newCount = slideshowSelected.size;
+            if (newCount > 0) {
+              slideshowMaxUploads = newCount;
+              if ($slMaxUploads && !$slMaxUploads.dataset.dirty) $slMaxUploads.value = newCount;
+            }
+          }
           updateSlCounter();
           renderSlideshowGrid();
         });
       });
 
-      // Per-image matte (passepartout) picker lives in the dblclick preview
+      // Per-image matte picker lives in the dblclick preview
       // modal now — the per-thumb <select> made the small grid too noisy. The
       // matte preview overlay still renders here so users can see at a glance
       // which images have an override applied.
 
-      // Double-click a thumbnail → open the large preview modal so the matte choice
-      // can be evaluated at near-full-screen size. The modal navigates within
-      // whichever section the thumb was opened from (Selected vs a collection).
+      // Double-click a thumbnail → also opens the preview modal (kept so the
+      // Selected overview, where single-click is reserved for drag-start, still
+      // has a way to preview an image at near-full-screen size).
       $slGrid.querySelectorAll('.sl-thumb').forEach(el => {
         el.addEventListener('dblclick', (e) => {
           e.preventDefault();
           e.stopPropagation();
-          const path = el.dataset.path;
-          if (!path) return;
-          // Resolve the image list this thumb belongs to so the modal's
-          // arrow keys / nav buttons walk the correct sequence.
-          const $body = el.closest('.sl-coll-body');
-          const containerId = $body && $body.id;
-          let list = [];
-          if (containerId === 'sl-cc-sel') {
-            list = selectedImgs.slice();
-          } else if (containerId && containerId.startsWith('sl-cc-')) {
-            const ci = parseInt(containerId.substring(6), 10);
-            const k = sortedKeys[ci];
-            if (k) list = (collMap.get(k) || []).slice();
-          }
-          let idx = list.findIndex(i => i.path === path);
-          if (idx < 0) {
-            // Fallback: synthesise a single-image list.
-            const ls = path.lastIndexOf('/');
-            const folder = ls > 0 ? path.substring(0, ls) : '';
-            const file = ls >= 0 ? path.substring(ls + 1) : path;
-            const fallbackImg = (slideshowAvailable.find(i => i.path === path))
-              || { path, folder, file, title: '', artist: folder, year: '' };
-            list = [fallbackImg];
-            idx = 0;
-          }
-          openSlideshowModal(list, idx);
+          _openModalForThumb(el);
         });
       });
 
