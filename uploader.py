@@ -64,6 +64,7 @@ import datetime
 import argparse
 import csv
 import unicodedata
+import urllib.request
 from signal import SIGTERM, SIGINT
 HAVE_PIL = False
 try:
@@ -373,6 +374,38 @@ class monitor_and_display:
         self.mqtt_slideshow_attr_topic = os.environ.get('SAMSUNG_TV_ART_MQTT_SLIDESHOW_ATTR', 'frame_tv/slideshow/attributes')
         self.mqtt_slideshow_available_topic = os.environ.get('SAMSUNG_TV_ART_MQTT_SLIDESHOW_AVAILABLE', 'frame_tv/slideshow/available')
         self.mqtt_slideshow_presets_topic = os.environ.get('SAMSUNG_TV_ART_MQTT_SLIDESHOW_PRESETS', 'frame_tv/slideshow/presets')
+        self.slideshow_presets_path = '/data/slideshow_presets.json'
+        self._slideshow_presets = []  # in-memory cache, source of truth for republish
+        # Per-image matte overrides — stored {path_rel: matte_id}
+        self.mqtt_slideshow_mattes_topic = os.environ.get('SAMSUNG_TV_ART_MQTT_SLIDESHOW_MATTES', 'frame_tv/slideshow/mattes')
+        self.mqtt_slideshow_matte_options_topic = os.environ.get('SAMSUNG_TV_ART_MQTT_SLIDESHOW_MATTE_OPTIONS', 'frame_tv/slideshow/matte_options')
+        self.matte_overrides_path = '/data/matte_overrides.json'
+        self._matte_overrides = {}
+        self._matte_options_cache = None  # {'matte_types':[...], 'matte_colors':[...]}
+        # ── Per-image matte probe state ─────────────────────────────────────
+        # Runs in the background; for each uploaded image, exhaustively tests
+        # every (matte_type, color) combo against the TV and records which ones
+        # the TV rejects with error -7. Results are persisted by basename and
+        # invalidated when the TV's model/firmware fingerprint changes (Tizen
+        # updates can change which combos the TV accepts).
+        #
+        # Single global probe (not per-image): we initially tried probing each
+        # uploaded image and learned (a) the TV's -7 rejections are nearly
+        # uniform across images, (b) the rare per-image variances are
+        # unreliable — combos the TV accepted during probe still threw -7
+        # later at slideshow time — and (c) the per-upload churn isn't worth
+        # the noise. We now probe ONCE against the standby image at startup
+        # (when no cached blocklist exists, or when the TV fingerprint has
+        # changed) and reuse the result for every image.
+        self.matte_blocklist_path = '/data/matte_blocklist.json'
+        self._matte_bad_combos = []           # list of [type, color] currently rejected by TV
+        self._matte_blocklist_tv_device = {}  # fingerprint captured when blocklist was written
+        self._matte_probe_tv_fp = {}          # current TV fingerprint; populated at startup
+        self._matte_probe_task = None         # one-shot global probe task handle
+        self._matte_probe_in_progress = False
+        # Tunable via env so users can slow it down further if the TV gets unhappy.
+        self._matte_probe_delay   = float(os.environ.get('SAMSUNG_TV_ART_MATTE_PROBE_DELAY', '0.8'))
+        self._matte_probe_retries = int(os.environ.get('SAMSUNG_TV_ART_MATTE_PROBE_RETRIES', '2'))
         self.ha_rest_enabled = False  # REST disabled in MQTT-only build
         self._mqtt = None
         self._presets_from_broker = False   # True once retained presets msg received
@@ -548,15 +581,41 @@ class monitor_and_display:
             self._load_csv_metadata()
         # Load persisted slideshow override before MQTT so state is ready when topics publish
         self._load_slideshow_override()
+        self._load_slideshow_presets()
+        self._load_matte_overrides()
         # Init MQTT if enabled
         if self.mqtt_enabled:
             self._init_mqtt()
+            # Lock the UI as early as possible.  TV connect + standby + (optional)
+            # matte probe can take many seconds; without an early uploading=true
+            # signal, the web UI shows slideshow controls as available during
+            # this window (driven by the previous session's retained state).
+            # We publish discovery + slideshow_state now so the grid locks
+            # immediately on (re)connect.  These are re-published below once the
+            # full discovery suite runs; the duplicate is harmless.
+            try:
+                self._startup_in_progress = True
+                self._publish_mqtt_discovery()
+                self._publish_slideshow_state()
+            except Exception:
+                pass
         # Start periodic memory logging if enabled
         try:
             if getattr(self, 'memlog_seconds', 0) > 0:
                 asyncio.create_task(self._memlogger())
         except Exception:
             pass
+
+        # Initialize matte blocklist: fetch the TV's identity (sync REST call
+        # offloaded to a thread) and load any persisted blocklist from disk.
+        # The actual probe (one-shot, global, against the standby image) is
+        # scheduled later by _maybe_start_matte_probe() once standby is
+        # selected — we need a content_id on the TV to probe against.
+        try:
+            self._matte_probe_tv_fp = await asyncio.to_thread(self._matte_probe_fetch_tv_fingerprint)
+            self._load_matte_blocklist()
+        except Exception as e:
+            self.log.warning('Matte blocklist init failed (non-fatal): %s', e)
         
         if self.on and self.tv is not None and not await self.tv.on():
             self.log.info('TV is off, exiting')
@@ -580,6 +639,10 @@ class monitor_and_display:
                     try:
                         await self.check_matte()
                         await self.ensure_standby_selected()
+                        # Standby is now on the TV — if we don't have a valid
+                        # cached blocklist for this firmware, fire off a
+                        # one-shot global probe in the background.
+                        self._maybe_start_matte_probe()
                         await self.cleanup_old_uploads()
                     except Exception as e:
                         self.log.warning('Startup TV setup error (non-fatal): %s', e)
@@ -670,8 +733,11 @@ class monitor_and_display:
             if prev is True and not in_artmode:
                 # TV just left art mode — publish sentinel with in_art_mode: False so UIs disable
                 self._publish_mqtt_state('Unavailable', 'unavailable', None)
-            elif prev is False and in_artmode:
-                # TV just re-entered art mode — immediately republish so UIs re-enable.
+            elif prev is not True and in_artmode:
+                # TV just (re-)entered art mode, or this is the first confirmed
+                # True after startup (prev=None).  Immediately republish so UIs
+                # re-enable and any stale retained in_art_mode:false from a
+                # previous session is cleared.
                 # Set _last_state_publish=0 AND do an immediate forced publish so the
                 # in_art_mode: True state is pushed to MQTT now, even if a reseed starts
                 # right after (which would set _refresh_in_progress=True and block the
@@ -767,6 +833,12 @@ class monitor_and_display:
         try:
             file_data, file_type = self.read_file(standby_path)
             if file_data and self.tv.art_mode:
+                # self.tv.art_mode is True here (last-known WebSocket state), so we
+                # know the TV is in art mode.  Record this immediately so the
+                # _publish_mqtt_state below carries in_art_mode: true instead of
+                # the stale bool(None)=false that would otherwise be retained
+                # until safe_in_artmode() finally succeeds.
+                self._in_art_mode = True
                 content_id = await self._upload_to_tv(file_data, file_type, self.matte)
                 if content_id:
                     self.standby_content_id = content_id
@@ -1348,10 +1420,19 @@ class monitor_and_display:
                 # Multi-collection mode: filename includes collection subfolder
                 path = os.path.join(self.media_root, filename)
                 display_name = filename  # Show full relative path in logs
+                path_rel_for_matte = filename
             else:
                 # Single folder mode: simple filename
                 path = os.path.join(self.folder, filename)
                 display_name = filename
+                # Build a path_rel under media_root if possible, for matte lookup
+                try:
+                    if self.media_root and os.path.commonpath([self.media_root, path]) == self.media_root:
+                        path_rel_for_matte = os.path.relpath(path, self.media_root)
+                    else:
+                        path_rel_for_matte = filename
+                except Exception:
+                    path_rel_for_matte = filename
             
             # Verify file exists before attempting upload
             if not os.path.isfile(path):
@@ -1368,7 +1449,8 @@ class monitor_and_display:
                         pass
                 content_id = None
                 try:
-                    content_id = await self._upload_to_tv(file_data, file_type, self.matte)
+                    matte_for_upload = self._resolve_matte_for(path_rel_for_matte, os.path.basename(filename))
+                    content_id = await self._upload_to_tv(file_data, file_type, matte_for_upload)
                     consecutive_failures = 0  # Reset on success
                 except AssertionError:
                     self.log.warning('file: %s failed to upload (empty response)', display_name)
@@ -2008,6 +2090,7 @@ class monitor_and_display:
         try:
             defaults = self._generate_default_presets()
             if defaults:
+                self._save_slideshow_presets(defaults)
                 self._mqtt.publish(
                     self.mqtt_slideshow_presets_topic,
                     json.dumps(defaults),
@@ -2095,12 +2178,25 @@ class monitor_and_display:
                     client.subscribe(self.mqtt_slideshow_presets_topic, qos=1)
                 except Exception:
                     pass
-                # Bootstrap default presets if broker has none after 3 seconds.
-                # Only start the timer on the first-ever connect; on reconnects
-                # _presets_from_broker is already True (we've seen the retained
-                # presets before) so we skip re-bootstrapping, which would
-                # otherwise overwrite a user "Clear all" action.
-                if not self._presets_from_broker:
+                # Bootstrap presets:
+                #  1) If we have presets persisted on disk, republish them as retained
+                #     so the broker (which may have lost retain across its own restart
+                #     or a fresh container) is reseeded from our local source of truth.
+                #  2) Otherwise, wait briefly for a retained message from the broker;
+                #     if none arrives, generate defaults from installed collections.
+                if self._slideshow_presets:
+                    try:
+                        client.publish(
+                            self.mqtt_slideshow_presets_topic,
+                            json.dumps(self._slideshow_presets),
+                            qos=1, retain=True,
+                        )
+                        self._presets_from_broker = True
+                        self.log.info('Republished %d persisted preset(s) to %s',
+                                      len(self._slideshow_presets), self.mqtt_slideshow_presets_topic)
+                    except Exception as e:
+                        self.log.warning('Failed to republish persisted presets: %s', e)
+                elif not self._presets_from_broker:
                     if self._presets_bootstrap_timer:
                         self._presets_bootstrap_timer.cancel()
                     t = threading.Timer(3.0, self._bootstrap_default_presets)
@@ -2111,6 +2207,7 @@ class monitor_and_display:
                 try:
                     self._publish_collections_state()
                     self._publish_settings_state()
+                    self._publish_matte_overrides()
                 except Exception:
                     pass
                 # Reset artwork state refresh timer so the main loop immediately
@@ -2235,7 +2332,12 @@ class monitor_and_display:
                 self._publish_and_wait(self.mqtt_state_topic, display or "", qos=1, retain=True)
             except Exception:
                 self._mqtt.publish(self.mqtt_state_topic, display or "", qos=0, retain=True)
-            attrs = {"file": file or "", "collection": collection or "", "in_art_mode": bool(self._in_art_mode)}
+            attrs = {"file": file or "", "collection": collection or ""}
+            # Only include in_art_mode when we actually know.  Writing False
+            # while the state is still None (unknown) retains a stale 'Not in
+            # art mode' for the web UI until the next confirmed-True transition.
+            if self._in_art_mode is not None:
+                attrs["in_art_mode"] = bool(self._in_art_mode)
             # Merge CSV columns (ensure every header key exists, even if blank)
             if self._csv_headers:
                 path_key = f"{collection}/{file}" if collection and file else None
@@ -2408,6 +2510,362 @@ class monitor_and_display:
                 json.dump(data, f)
         except Exception as e:
             self.log.warning('Failed to save slideshow override: %s', e)
+
+    # ── Slideshow presets persistence ──────────────────────────────────────
+
+    def _load_slideshow_presets(self):
+        """Load persisted slideshow presets from /data/slideshow_presets.json."""
+        try:
+            if os.path.isfile(self.slideshow_presets_path):
+                with open(self.slideshow_presets_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    self._slideshow_presets = data
+                    self.log.info('Loaded %d persisted slideshow preset(s)', len(data))
+        except Exception as e:
+            self.log.warning('Failed to load slideshow presets: %s', e)
+            self._slideshow_presets = []
+
+    def _save_slideshow_presets(self, presets):
+        """Persist slideshow presets to /data/slideshow_presets.json."""
+        try:
+            os.makedirs('/data', exist_ok=True)
+            with open(self.slideshow_presets_path, 'w', encoding='utf-8') as f:
+                json.dump(presets if isinstance(presets, list) else [], f)
+            self._slideshow_presets = presets if isinstance(presets, list) else []
+        except Exception as e:
+            self.log.warning('Failed to save slideshow presets: %s', e)
+
+    # ── Per-image matte overrides ───────────────────────────────────────────
+
+    def _load_matte_overrides(self):
+        """Load persisted per-image matte overrides from disk."""
+        try:
+            if os.path.isfile(self.matte_overrides_path):
+                with open(self.matte_overrides_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    # filter to {str: str}
+                    self._matte_overrides = {
+                        str(k): str(v) for k, v in data.items()
+                        if isinstance(k, str) and isinstance(v, str) and v
+                    }
+                    self.log.info('Loaded %d persisted matte override(s)', len(self._matte_overrides))
+        except Exception as e:
+            self.log.warning('Failed to load matte overrides: %s', e)
+            self._matte_overrides = {}
+
+    def _save_matte_overrides(self):
+        """Persist per-image matte overrides to disk."""
+        try:
+            os.makedirs('/data', exist_ok=True)
+            with open(self.matte_overrides_path, 'w', encoding='utf-8') as f:
+                json.dump(self._matte_overrides, f)
+        except Exception as e:
+            self.log.warning('Failed to save matte overrides: %s', e)
+
+    def _resolve_matte_for(self, path_rel, fname=None):
+        """Resolve effective matte for an image.
+        Priority: per-image override → CSV 'matte' column → global self.matte default.
+        """
+        try:
+            if path_rel and path_rel in self._matte_overrides:
+                return self._matte_overrides[path_rel]
+            if fname and fname in self._matte_overrides:
+                return self._matte_overrides[fname]
+            csv_rec = (
+                (path_rel and getattr(self, '_csv_by_path', {}).get(path_rel))
+                or (fname and self._csv_by_file.get(fname))
+                or {}
+            )
+            csv_matte = (csv_rec.get('matte') or '').strip()
+            if csv_matte:
+                return csv_matte
+        except Exception:
+            pass
+        return self.matte
+
+    def _publish_matte_overrides(self):
+        """Publish current per-image matte overrides as a retained MQTT map."""
+        if not self.mqtt_enabled or not self._mqtt:
+            return
+        try:
+            payload = json.dumps(self._matte_overrides, separators=(',', ':'))
+            self._mqtt.publish(self.mqtt_slideshow_mattes_topic, payload, qos=1, retain=True)
+        except Exception as e:
+            self.log.debug('MQTT mattes publish failed: %s', e)
+
+    async def _ensure_matte_options_cache(self):
+        """Populate self._matte_options_cache from the TV (or fallback). Safe to
+        call from anywhere — no MQTT side effects. Used by both the MQTT
+        publisher and the background matte probe worker."""
+        if self._matte_options_cache is not None:
+            return
+        try:
+            mattes = await self.tv.get_matte_list(True)
+            if isinstance(mattes, (list, tuple)) and len(mattes) >= 2:
+                types = [m.get('matte_type') for m in mattes[0] if isinstance(m, dict) and m.get('matte_type')]
+                colors = [m.get('color') for m in mattes[1] if isinstance(m, dict) and m.get('color')]
+                self._matte_options_cache = {'matte_types': types, 'matte_colors': colors}
+            elif isinstance(mattes, dict):
+                self._matte_options_cache = {
+                    'matte_types': [m.get('matte_type') for m in (mattes.get('matte_types') or []) if isinstance(m, dict) and m.get('matte_type')],
+                    'matte_colors': [m.get('color') for m in (mattes.get('matte_colors') or []) if isinstance(m, dict) and m.get('color')],
+                }
+        except Exception as e:
+            self.log.debug('get_matte_list failed, using fallback: %s', e)
+            self._matte_options_cache = {
+                'matte_types':  ['none', 'shadowbox', 'modern', 'modernthin', 'modernwide',
+                                 'flexible', 'panoramic', 'triptych', 'mix', 'squares'],
+                'matte_colors': ['polar', 'neutral', 'apricot', 'sand', 'seafoam', 'lavender',
+                                 'burgandy', 'navy', 'forest', 'dark', 'warm', 'sage'],
+            }
+
+    async def _publish_matte_options(self):
+        """Fetch (and cache) the TV's matte_type/matte_color list, publish as retained."""
+        if not self.mqtt_enabled or not self._mqtt:
+            return
+        await self._ensure_matte_options_cache()
+        try:
+            payload = json.dumps(self._matte_options_cache, separators=(',', ':'))
+            self._mqtt.publish(self.mqtt_slideshow_matte_options_topic, payload, qos=1, retain=True)
+        except Exception as e:
+            self.log.debug('MQTT matte_options publish failed: %s', e)
+
+    # ── Single-shot global matte probe ───────────────────────────────────────
+
+    def _matte_probe_fetch_tv_fingerprint(self):
+        """Synchronous REST GET to the TV's /api/v2/ endpoint to capture a
+        model+firmware identity. Returns {} on any failure. Called from a
+        thread executor (do not call directly from the event loop).
+
+        Note: many Samsung Frame TVs report `firmwareVersion: "Unknown"`
+        over REST. The Art API version (captured separately via WebSocket
+        in get_api_version) is the actual invariant we use for cache
+        invalidation — _matte_probe_refresh_api_version() folds it in once
+        the TV connection is established."""
+        ip = (self.ip or '').strip()
+        if not ip:
+            return {}
+        try:
+            with urllib.request.urlopen(f'http://{ip}:8001/api/v2/', timeout=3.0) as r:
+                raw = json.loads(r.read().decode('utf-8') or '{}')
+        except Exception:
+            return {}
+        dev = raw.get('device') if isinstance(raw, dict) else None
+        if not isinstance(dev, dict):
+            return {}
+        # Many Samsung Frame TVs report the literal string 'Unknown' for
+        # firmwareVersion over REST.  Treat that as missing so we don't
+        # save a noisy placeholder; real firmware strings (when reported)
+        # still flow through as diagnostic info.
+        fw = (dev.get('firmwareVersion') or dev.get('version') or '').strip()
+        if fw.lower() == 'unknown':
+            fw = ''
+        fp = {
+            'model':       dev.get('modelName') or dev.get('model') or '',
+            'os':          dev.get('OS') or '',
+            'name':        dev.get('name') or '',
+            'wifi_mac':    dev.get('wifiMac') or '',
+            'type':        dev.get('type') or '',
+            'api_version': '',  # filled in by _matte_probe_refresh_api_version
+        }
+        if fw:
+            fp['firmware_version'] = fw
+        return fp
+
+    def _matte_probe_refresh_api_version(self):
+        """Fold the Art API version (set by get_api_version) into the
+        cached TV fingerprint. Idempotent."""
+        api_v = getattr(self, 'api_version_str', '') or ''
+        if not api_v:
+            return
+        if self._matte_probe_tv_fp is None:
+            self._matte_probe_tv_fp = {}
+        self._matte_probe_tv_fp['api_version'] = api_v
+
+    def _matte_probe_fp_matches(self, a, b):
+        """Two fingerprints 'match' when their model + Art API version
+        match. firmware_version is intentionally NOT compared because the
+        TV's REST endpoint commonly reports it as 'Unknown' (which would
+        silently match itself forever). If either side is missing
+        api_version (e.g. during startup before the TV WebSocket is up),
+        fall back to model-only comparison; the api_version check is
+        re-run later by _maybe_start_matte_probe once both sides are known.
+        Empty fingerprints never match."""
+        if not a or not b:
+            return False
+        if a.get('model') != b.get('model'):
+            return False
+        a_api = a.get('api_version') or ''
+        b_api = b.get('api_version') or ''
+        if a_api and b_api:
+            return a_api == b_api
+        return True  # model matches; api_version not yet comparable
+
+    def _load_matte_blocklist(self):
+        """Load /data/matte_blocklist.json. Discards the cache when the
+        recorded TV fingerprint doesn't match the current TV (firmware
+        update) \u2014 the probe will be re-run on startup."""
+        if not os.path.isfile(self.matte_blocklist_path):
+            return
+        try:
+            with open(self.matte_blocklist_path, 'r', encoding='utf-8') as f:
+                data = json.load(f) or {}
+        except Exception as e:
+            self.log.warning('Failed to load matte blocklist: %s', e)
+            return
+        cached_fp = data.get('tv_device') or {}
+        current_fp = self._matte_probe_tv_fp or {}
+        if cached_fp and current_fp and not self._matte_probe_fp_matches(cached_fp, current_fp):
+            self.log.info('Matte blocklist discarded \u2014 TV fingerprint changed '
+                          '(was %s/api %s, now %s/api %s)',
+                          cached_fp.get('model'), cached_fp.get('api_version') or '?',
+                          current_fp.get('model'), current_fp.get('api_version') or '?')
+            return
+        # If the file is a probe-in-progress stub from a previous run that was
+        # killed mid-probe, don't treat its empty bad_combos as authoritative \u2014
+        # leave _matte_blocklist_tv_device unset so _maybe_start_matte_probe
+        # will re-run the probe.
+        if data.get('probe_in_progress'):
+            self.log.info('Matte blocklist found in-progress stub \u2014 will re-probe')
+            return
+        bad = data.get('bad_combos') or []
+        # Normalize to list-of-pairs.
+        normalized = []
+        for item in bad:
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                normalized.append([str(item[0]), str(item[1])])
+        self._matte_bad_combos = normalized
+        self._matte_blocklist_tv_device = cached_fp
+        self.log.info('Loaded matte blocklist: %d rejected combo(s)', len(normalized))
+
+    def _save_matte_blocklist(self, probe_in_progress=False):
+        try:
+            os.makedirs(os.path.dirname(self.matte_blocklist_path) or '.', exist_ok=True)
+            payload = {
+                'tv_device':         self._matte_probe_tv_fp,
+                'bad_combos':        self._matte_bad_combos,
+                'probe_in_progress': bool(probe_in_progress),
+                'probed_at':         None if probe_in_progress else datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
+            }
+            with open(self.matte_blocklist_path, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, indent=2)
+            if not probe_in_progress:
+                self._matte_blocklist_tv_device = dict(self._matte_probe_tv_fp or {})
+        except Exception as e:
+            self.log.warning('Failed to save matte blocklist: %s', e)
+
+    @staticmethod
+    def _matte_probe_is_minus_7(exc):
+        msg = str(exc)
+        return 'error number -7' in msg or "'-7'" in msg or 'errno -7' in msg
+
+    async def _matte_probe_try(self, content_id, combo):
+        """Apply one matte combo with retries on transient -7 errors.
+        Returns True if the TV accepted the combo, False if it consistently
+        rejected (-7) or another error class occurred."""
+        attempts = self._matte_probe_retries + 1
+        for attempt in range(attempts):
+            try:
+                await self.tv.change_matte(content_id, combo, portrait_matte=combo)
+                return True
+            except Exception as e:
+                if not self._matte_probe_is_minus_7(e):
+                    return False  # non-(-7) errors are usually fatal; don't waste retries
+                if attempt < attempts - 1:
+                    await asyncio.sleep(self._matte_probe_delay)
+        return False
+
+    async def _matte_probe_current_matte(self, content_id):
+        """Best-effort: read the current matte for a content_id so we can
+        restore it after the probe sweep. Returns 'none' on any failure."""
+        try:
+            items = await self.tv.available('MY-C0002', timeout=10)
+            for it in (items or []):
+                if isinstance(it, dict) and it.get('content_id') == content_id:
+                    return it.get('matte_id') or 'none'
+        except Exception:
+            pass
+        return 'none'
+
+    def _maybe_start_matte_probe(self):
+        """Schedule the one-shot global probe iff:
+          - we don't already have a probe task running,
+          - the TV fingerprint changed since the cached blocklist was written
+            (or there is no cached blocklist at all).
+        Called from start_monitoring after standby is selected; safe to call
+        multiple times."""
+        if self._matte_probe_in_progress or (self._matte_probe_task and not self._matte_probe_task.done()):
+            return
+        # Fold the Art API version into the fingerprint now that the TV
+        # connection is up (get_api_version has run by this point).
+        self._matte_probe_refresh_api_version()
+        cached_fp = self._matte_blocklist_tv_device or {}
+        current_fp = self._matte_probe_tv_fp or {}
+        # If we have a cached blocklist and the fingerprint still matches, skip.
+        if cached_fp and current_fp and self._matte_probe_fp_matches(cached_fp, current_fp):
+            return
+        # Need a content_id to probe against \u2014 standby is the obvious choice.
+        if not self.standby_content_id:
+            self.log.debug('Matte probe skipped \u2014 no standby content_id yet')
+            return
+        self.log.info('Matte blocklist missing or stale \u2014 scheduling one-shot probe against standby (%s)',
+                      self.standby_content_id)
+        self._matte_probe_task = asyncio.create_task(self._matte_probe_global(self.standby_content_id))
+
+    async def _matte_probe_global(self, content_id):
+        """Probe every (type, color) combo against ONE image (standby).
+        The result becomes the global blocklist, reused for every image in
+        the slideshow.
+
+        'none' is intentionally not probed \u2014 it's the UI's clear/reset path
+        and the TV NACKs a redundant 'none' set with -7 when the image
+        already has no matte; we must never blocklist it."""
+        if self.tv is None or not content_id:
+            return
+        self._matte_probe_in_progress = True
+        try:
+            await self._ensure_matte_options_cache()
+            opts = self._matte_options_cache or {}
+            types  = [t for t in (opts.get('matte_types')  or []) if t and t != 'none']
+            colors = [c for c in (opts.get('matte_colors') or []) if c]
+            combos = [(t, c) for t in types for c in colors]
+            if not combos:
+                self.log.warning('Matte probe: no combos to test')
+                return
+            # Write an in-progress stub immediately so the UI can show a
+            # "Probing matte support…" placeholder instead of letting the
+            # user pick combos that may be rejected.
+            self._matte_bad_combos = []
+            self._save_matte_blocklist(probe_in_progress=True)
+            original_matte = await self._matte_probe_current_matte(content_id)
+            self.log.info('Matte probe starting: %d combos against %s', len(combos), content_id)
+            bad_combos = []
+            for idx, (t, c) in enumerate(combos):
+                combo_str = f'{t}_{c}'
+                ok = await self._matte_probe_try(content_id, combo_str)
+                if not ok:
+                    bad_combos.append([t, c])
+                if (idx + 1) % 10 == 0:
+                    self.log.debug('Matte probe progress: %d/%d', idx + 1, len(combos))
+                await asyncio.sleep(self._matte_probe_delay)
+            # Restore the matte we found on entry.
+            try:
+                await self.tv.change_matte(content_id, original_matte, portrait_matte=original_matte)
+            except Exception as e:
+                self.log.debug('Matte probe: could not restore original %s for %s: %s',
+                               original_matte, content_id, e)
+            self._matte_bad_combos = bad_combos
+            self._save_matte_blocklist()
+            self.log.info('Matte probe done: %d good, %d bad',
+                          len(combos) - len(bad_combos), len(bad_combos))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.log.warning('Matte probe: unexpected error: %s', e)
+        finally:
+            self._matte_probe_in_progress = False
 
     def _publish_slideshow_state(self):
         """Publish current slideshow mode, settings, and active paths to MQTT."""
@@ -2767,7 +3225,7 @@ class monitor_and_display:
         except Exception as e:
             self.log.warning('Failed to publish selected collections state: %s', e)
 
-    def _publish_ack(self, cmd, status='ok', message='', req_id=None):
+    def _publish_ack(self, cmd, status='ok', message='', req_id=None, extra=None):
         if not self.mqtt_enabled or not self._mqtt:
             return
         try:
@@ -2776,6 +3234,10 @@ class monitor_and_display:
                 ack["message"] = message
             if req_id is not None:
                 ack["req_id"] = req_id
+            if isinstance(extra, dict):
+                for k, v in extra.items():
+                    if k not in ack:
+                        ack[k] = v
             ack["selected_collections"] = self.selected_collections
             self._mqtt.publish(f"{self.mqtt_ack_prefix}/{cmd}", json.dumps(ack, separators=(",", ":")), qos=0, retain=False)
         except Exception:
@@ -3058,12 +3520,14 @@ class monitor_and_display:
                     self._publish_ack('slideshow/override/set', 'error', 'Failed to queue override apply', req_id)
                 return
             if cmd == 'slideshow/presets/set':
-                # Clients publish their full presets array here; backend re-publishes
-                # it as a retained message so all other clients receive it on subscribe.
+                # Clients publish their full presets array here; backend persists it
+                # to disk and re-publishes as a retained message so all other clients
+                # receive it on subscribe and so it survives container recreation.
                 try:
                     presets = json.loads(payload_raw) if payload_raw else []
                     if not isinstance(presets, list):
                         presets = []
+                    self._save_slideshow_presets(presets)
                     self._mqtt.publish(
                         self.mqtt_slideshow_presets_topic,
                         json.dumps(presets),
@@ -3075,21 +3539,31 @@ class monitor_and_display:
                     self._publish_ack('slideshow/presets/set', 'error', str(e), req_id)
                 return
             if cmd == 'slideshow/presets/generate':
-                try:
-                    generated = self._generate_default_presets()
-                    if not generated:
-                        self._publish_ack('slideshow/presets/generate', 'error', 'No images found', req_id)
-                        return
-                    self._mqtt.publish(
-                        self.mqtt_slideshow_presets_topic,
-                        json.dumps(generated),
-                        qos=1,
-                        retain=True,
-                    )
-                    self._publish_ack('slideshow/presets/generate', 'ok',
-                                      f'{len(generated)} preset(s) generated', req_id)
-                except Exception as e:
-                    self._publish_ack('slideshow/presets/generate', 'error', str(e), req_id)
+                # Offload to the event loop (and a thread executor for the CPU/IO
+                # work) so we never block paho's network loop thread — a long
+                # callback here can starve the MQTT keepalive and trigger a
+                # broker disconnect ([Errno 32] Broken pipe).
+                async def _do_generate_presets():
+                    try:
+                        loop = asyncio.get_running_loop()
+                        generated = await loop.run_in_executor(None, self._generate_default_presets)
+                        if not generated:
+                            self._publish_ack('slideshow/presets/generate', 'error', 'No images found', req_id)
+                            return
+                        self._save_slideshow_presets(generated)
+                        self._mqtt.publish(
+                            self.mqtt_slideshow_presets_topic,
+                            json.dumps(generated),
+                            qos=1,
+                            retain=True,
+                        )
+                        self._publish_ack('slideshow/presets/generate', 'ok',
+                                          f'{len(generated)} preset(s) generated', req_id)
+                    except Exception as e:
+                        self._publish_ack('slideshow/presets/generate', 'error', str(e), req_id)
+                fut = self._schedule_command_coro(_do_generate_presets(), 'slideshow/presets/generate')
+                if not fut:
+                    self._publish_ack('slideshow/presets/generate', 'error', 'Failed to queue preset generation', req_id)
                 return
             if cmd == 'slideshow/override/clear':
                 self.slideshow_override = None
@@ -3097,6 +3571,71 @@ class monitor_and_display:
                 self.shown_content_ids = set()
                 self._publish_slideshow_state()
                 self._publish_ack('slideshow/override/clear', 'ok', 'Slideshow override cleared; auto mode restored', req_id)
+                return
+            if cmd == 'slideshow/matte/set':
+                # Set or clear per-image matte. Persists to disk and,
+                # if the image is currently uploaded to the TV, applies live via change_matte.
+                try:
+                    if not isinstance(data, dict):
+                        self._publish_ack('slideshow/matte/set', 'error', 'Invalid JSON', req_id)
+                        return
+                    path = str(data.get('path', '')).strip()
+                    matte = str(data.get('matte', '')).strip() or 'none'
+                    if not path:
+                        self._publish_ack('slideshow/matte/set', 'error', 'Missing path', req_id)
+                        return
+                    # Empty matte (or 'default'/'__default__') clears the override → fall back to global
+                    if matte in ('', 'default', '__default__'):
+                        self._matte_overrides.pop(path, None)
+                        effective = self._resolve_matte_for(path, os.path.basename(path))
+                    else:
+                        self._matte_overrides[path] = matte
+                        effective = matte
+                    self._save_matte_overrides()
+                    self._publish_matte_overrides()
+                    # Apply live to TV if the image is uploaded
+                    content_id = None
+                    for k, v in self.uploaded_files.items():
+                        if v.get('path_rel') == path or k == os.path.basename(path):
+                            content_id = v.get('content_id')
+                            break
+                    if content_id:
+                        # Capture the pre-change state so we can revert if the TV rejects the combo.
+                        had_override = path in self._matte_overrides
+                        prev_override = self._matte_overrides.get(path)
+                        async def _apply():
+                            try:
+                                await self.tv.change_matte(content_id, effective, portrait_matte=effective)
+                                self._publish_ack('slideshow/matte/set', 'ok', f'Matte set to {effective}', req_id, extra={'path': path, 'matte': effective})
+                            except Exception as ex:
+                                # The TV NACKs a redundant 'none' set with -7 when the image
+                                # already has no matte. That's not a real failure \u2014 the user's
+                                # intent (no matte) is already satisfied. Treat as success.
+                                if effective == 'none' and self._matte_probe_is_minus_7(ex):
+                                    self.log.debug('change_matte none for %s: TV says already none (-7); treating as ok', path)
+                                    self._publish_ack('slideshow/matte/set', 'ok', 'Matte already none', req_id, extra={'path': path, 'matte': effective})
+                                    return
+                                self.log.warning('change_matte failed for %s: %s', path, ex)
+                                # Revert persisted override so the staged state matches reality.
+                                if had_override:
+                                    self._matte_overrides[path] = prev_override
+                                else:
+                                    self._matte_overrides.pop(path, None)
+                                self._save_matte_overrides()
+                                self._publish_matte_overrides()
+                                self._publish_ack('slideshow/matte/set', 'error', f'TV rejected matte "{effective}" ({ex})', req_id, extra={'path': path, 'matte': effective})
+                        self._schedule_command_coro(_apply(), 'slideshow/matte/set')
+                    else:
+                        self._publish_ack('slideshow/matte/set', 'ok', f'Matte set to {effective}', req_id, extra={'path': path, 'matte': effective})
+                except Exception as e:
+                    self._publish_ack('slideshow/matte/set', 'error', str(e), req_id)
+                return
+            if cmd == 'slideshow/matte_options/request':
+                fut = self._schedule_command_coro(self._publish_matte_options(), 'slideshow/matte_options/request')
+                if fut:
+                    self._publish_ack('slideshow/matte_options/request', 'ok', 'Matte options publishing', req_id)
+                else:
+                    self._publish_ack('slideshow/matte_options/request', 'error', 'Failed to schedule', req_id)
                 return
             if cmd == 'slideshow/available/request':
                 # Optional 'collections' field allows the UI to preview a staged
@@ -3330,9 +3869,35 @@ class monitor_and_display:
             await self.tv.select_image(content_id)
             self.shown_content_ids.add(content_id)  # Mark as shown
             self.current_content_id = content_id
+            await self._reapply_matte_for(content_id)
             await self.update_ha_selected_artwork(content_id)
         else:
             self.log.info('skipping art update, as new content_id: %s is the same', content_id)
+
+    async def _reapply_matte_for(self, content_id):
+        '''Re-apply the per-image (or global) matte after select_image. The TV's
+        built-in slideshow tends to snap each image back to its upload-time matte
+        when it cycles, so when WE drive the slideshow we must restate the matte
+        on every cycle for our overrides to actually stick on screen.'''
+        try:
+            path_rel = None
+            fname = None
+            for k, v in self.uploaded_files.items():
+                if v.get('content_id') == content_id:
+                    path_rel = v.get('path_rel') or k
+                    fname = os.path.basename(path_rel) if path_rel else k
+                    break
+            effective = self._resolve_matte_for(path_rel, fname) or 'none'
+            try:
+                await self.tv.change_matte(content_id, effective, portrait_matte=effective)
+            except Exception as ex:
+                # Redundant 'none' set on an already-clear image throws -7; benign.
+                if effective == 'none' and self._matte_probe_is_minus_7(ex):
+                    return
+                raise
+            self.log.debug('reapplied matte %s for content_id=%s (path=%s)', effective, content_id, path_rel)
+        except Exception as ex:
+            self.log.debug('change_matte (cycle) failed for %s: %s', content_id, ex)
     
     async def check_dir(self):
         '''

@@ -2,40 +2,51 @@
 
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-kohlerryan-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://www.buymeacoffee.com/kohlerryan)
 
-A custom [Home Assistant](https://www.home-assistant.io/) Lovelace card for controlling a Samsung Frame TV art display — browse collections, trigger artwork reseeds, and monitor live refresh progress, all from your HA dashboard.
-
-![Card showing current artwork with artist and title metadata](images/hacard_fixed_v0.2.1.png)
+A viewer-only [Home Assistant](https://www.home-assistant.io/) Lovelace card for a Samsung Frame TV art display — shows the currently active artwork with full metadata, and opens the standalone [Samsung TV Art Uploader](https://github.com/kohlerryan/samsung-tv-art-uploader) web UI for any configuration.
 
 ---
 
-> **Upgrading from v0.1.x?** See the [v0.2.0 release notes](https://github.com/kohlerryan/samsung-tv-art-card/releases/tag/v0.2.0) for breaking changes and what's new.
+> **Breaking change in v0.4.0 — viewer-only rewrite**
+>
+> **If you are upgrading from v0.1.x – v0.3.x, read this before reloading.** The card is now a pure viewer; every editing control has been removed and the cog now opens the standalone [web UI](https://github.com/kohlerryan/samsung-tv-art-uploader) in a new tab.
+>
+> **Removed from the card itself:**
+> - In-card collection dropdown and Apply / Clear buttons
+> - Refresh and Update & Refresh actions
+> - All in-card MQTT subscriptions
+> - Live progress log inside the card body
+> - Slideshow editor, preset / saved-selection picker, and matte controls
+>
+> **Removed config keys** (delete these from your card YAML, they will be ignored):
+> - `settings_entity`
+> - `collections_entity`
+> - `selected_collections_entity`
+> - `refresh_cmd_topic`
+> - `refresh_ack_topic`
+> - `sync_ack_topic`
+>
+> **New required setup:** set [`web_ui_url`](#dashboard-card) to the address of your uploader instance (defaults to `http://samsung-tv-art.local:8080`). The cog opens that URL in a new tab; all editing now lives there. See the [v0.4.0 release notes](https://github.com/kohlerryan/samsung-tv-art-card/releases/tag/v0.4.0) for the full migration guide.
+>
+> **Upgrading from v0.1.x?** Also see the [v0.2.0 release notes](https://github.com/kohlerryan/samsung-tv-art-card/releases/tag/v0.2.0) for prior breaking changes.
 
-> **Upgrading from v0.2.x?** See the [v0.3.0 release notes](https://github.com/kohlerryan/samsung-tv-art-card/releases/tag/v0.3.0) for what's new.
+---
+
+![Card showing current artwork with artist and title metadata](images/hacard_v0.4.0.png)
 
 ---
 
 ## Features
 
 - **Artwork display** — shows the currently active image with artist name, title, year, medium, and description pulled from MQTT sensor attributes
-- **Collection selector** — multi-select dropdown to choose which art collections the TV should cycle through
-
-  ![Collection selector dropdown](images/hacard_collection_selection_v0.2.1.png)
-- **Slideshow controls** — popup panel to configure slideshow mode (random / sequential), rotation interval, and max uploads; includes an Apply button to push settings to the backend
-- **Manual override** — hand-pick artwork from a per-collection carousel grid with S/M/L thumbnail size controls; Shuffle button previews a random set without committing it (a "● Preview" badge indicates the selection hasn't been applied yet); Apply pins the selection to the TV
-- **Saved Selections** — name and save any selection as a preset; presets are stored as a retained MQTT message so they sync across the web UI and all HA cards; includes one-click load, update, and delete. On first start the backend auto-generates thematic defaults (Landscapes, Marine, Impressionism, etc.) from your installed collections
-
-  ![Slideshow controls popup and manual override grid](images/hacard_slideshow_v0.3.0.png)
-- **Not in art mode state** — when the TV is not in Art Mode the card collapses to a compact row showing the card title and a subtle "TV is not in art mode" label; controls are hidden until art mode resumes
+- **Settings cog → web UI** — the cog button opens the standalone [Samsung TV Art Uploader](https://github.com/kohlerryan/samsung-tv-art-uploader) web UI in a new tab. All collection selection, slideshow editing, per-image matte selection, saved selections, refresh / re-seed actions, and backend settings live there. Set `web_ui_url` in the card config to point at your install (see [Dashboard card](#dashboard-card) below).
+- **Not in art mode state** — when the TV is not in Art Mode the card collapses to a compact row showing the card title and a subtle "TV is not in art mode" label
 
   ![Card in not-in-art-mode state](images/hacard_art_mode_off_v0.2.1.png)
-- **Fixed / dynamic layout** — `fixed` mode (default) constrains the card to a 16:9 aspect ratio matching the TV; when artwork metadata overflows the info area a soft fade indicates more content, and tapping the info panel opens a floating detail overlay without growing the card. `dynamic` mode retains the original behaviour where the card grows with content (see [Layout mode](#layout-mode) below)
-- **Refresh** — clears uploads and re-seeds the TV with a fresh randomised set
-- **Update & Refresh** — fetches the latest collection updates from git, rebuilds the artwork database, then re-seeds
-- **Live progress log** — real-time status messages streamed from the backend during any refresh operation; state is preserved across page reloads for up to 15 minutes
-- **Settings panel** — configure TV IP address and MQTT broker connection (host, port, username, password) without leaving the dashboard; Apply & Restart pushes the new config and restarts the backend container
-
-  ![Settings panel with TV IP and MQTT broker fields](images/hacard_settings_v0.2.2.png)
+- **Fixed / dynamic layout** — `fixed` mode (default) constrains the card to a 16:9 aspect ratio matching the TV; when artwork metadata overflows the info area a soft fade indicates more content, and tapping the info panel opens a floating detail overlay without growing the card. `dynamic` mode retains the behaviour where the card grows with content (see [Layout mode](#layout-mode) below)
+- **Standby progress log** — while the TV is reseeding, live status messages from the backend (`frame_tv/log` MQTT topic) are shown below the standby image so you can see what's happening
 - **Mixed-content safe** — resolves image paths over HTTP or HTTPS to match the HA frontend protocol
+
+> **Why viewer-only?** The card used to host the full collection selector, refresh actions, slideshow editor, matte pickers, presets, and settings inline. As those features grew, the in-card UX hit hard ceilings inside the Lovelace context. v0.4.0 ships the card as a pure viewer and points the cog at the real web UI where the full editor lives.
 
 ---
 
@@ -61,7 +72,7 @@ A custom [Home Assistant](https://www.home-assistant.io/) Lovelace card for cont
    ```yaml
    lovelace:
      resources:
-         url: /local/samsung-tv-art-card/samsung-tv-art-card.js?v=v0.3.0
+         url: /local/samsung-tv-art-card/samsung-tv-art-card.js?v=v0.4.0
          type: module
    ```
 
@@ -77,26 +88,47 @@ Add the card to any dashboard view. Minimal configuration:
 type: custom:frame-tv-art-card
 title: Frame TV Art
 image_path: /local/images/frame_tv_art_collections
+web_ui_url: http://samsung-tv-art.local:8080
 ```
 
-All entity and MQTT topic names default to the values published by the `samsung-tv-art` backend container and can be overridden if needed:
+The `web_ui_url` is the address of the standalone web UI (typically port `8080` on the host running the `samsung-tv-art` container). It defaults to `http://samsung-tv-art.local:8080` (the mDNS hostname the container advertises) so most installs work without setting it. Override it if your container is reachable at a different host/port. Clicking the cog in the card header opens that URL in a new tab \u2014 all slideshow editing, matte selection, presets, and backend settings live there.
+
+> **HTTPS Home Assistant + HTTP uploader:** opening the URL in a new tab works fine (top-level navigation is allowed cross-scheme), but the browser may show a "Not Secure" warning on the uploader tab. If you'd prefer no warning, run the uploader behind a reverse proxy (Caddy add-on, NGINX Proxy Manager add-on, Traefik, etc.) and point `web_ui_url` at the HTTPS host.
+
+All defaults match what the `samsung-tv-art` backend container publishes. Only override if your install differs:
 
 ```yaml
 type: custom:frame-tv-art-card
 title: Frame TV Art
 image_path: /local/images/frame_tv_art_collections
+web_ui_url: http://samsung-tv-art.local:8080
 
-# Override only if your sensor names differ from the defaults
-settings_entity: sensor.frame_tv_art_settings
-collections_entity: sensor.frame_tv_art_collections
+# Override only if your sensor name differs from the default
 selected_artwork_file_entity: sensor.frame_tv_art_selected_artwork
-selected_collections_entity: sensor.frame_tv_art_selected_collections
 
-# Override only if your MQTT topics differ
-refresh_cmd_topic: frame_tv/cmd/collections/refresh
-refresh_ack_topic: frame_tv/ack/collections/refresh
-sync_ack_topic: frame_tv/ack/settings/sync_collections
+# Optional — explicit standby image override (otherwise <image_path>/standby.png)
+standby_image_path: /local/images/frame_tv_art_collections/standby.png
 ```
+
+### Optional: add the web UI as a sidebar item
+
+If you'd rather stay inside Home Assistant when editing, you can pin the web UI to the HA sidebar with the built-in `panel_iframe` integration (no extra software needed). Add to `configuration.yaml`:
+
+```yaml
+panel_iframe:
+  frame_tv_art:
+    title: Frame TV Art
+    icon: mdi:palette
+    url: http://samsung-tv-art.local:8080
+    require_admin: false
+```
+
+> **Caveat — mixed content:** browsers refuse to load an HTTP iframe inside an HTTPS page, with no override. If your HA frontend is served over HTTPS (Nabu Casa, DuckDNS+LE, a reverse proxy in front of HA, etc.) the iframe will appear blank or show a security error. To make the sidebar option work you either need:
+>
+> - an HTTP HA frontend (LAN-only setups), **or**
+> - the uploader served over HTTPS too (reverse proxy with a cert).
+>
+> The cog-opens-new-tab behaviour above does **not** have this problem because top-level navigation between schemes is allowed by browsers.
 
 ---
 
@@ -111,11 +143,11 @@ The card supports two layout modes controlled by the `layout_mode` key. The defa
 
 | Fixed layout | Fixed layout — art detail overlay |
 |---|---|
-| ![Fixed layout](images/hacard_fixed_v0.2.1.png) | ![Fixed layout with art detail overlay](images/hacard_fixed_art_details_v0.2.1.png) |
+| ![Fixed layout](images/hacard_fixed_v0.4.0.png) | ![Fixed layout with art detail overlay](images/hacard_fixed_art_details_v0.2.1.png) |
 
 | Dynamic layout |
 |---|
-| ![Dynamic layout](images/hacard_dynamic_v0.2.1.png) |
+| ![Dynamic layout](images/hacard_dynamic_v0.4.0.png) |
 
 To switch to dynamic mode add `layout_mode: dynamic` to your card YAML:
 
@@ -130,4 +162,4 @@ layout_mode: dynamic
 
 ## Version
 
-Current version: **v0.3.0** — bump the `?v=` cache-buster in the resource URL whenever you upgrade.
+Current version: **v0.4.0** — bump the `?v=` cache-buster in the resource URL whenever you upgrade.
