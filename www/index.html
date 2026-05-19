@@ -376,6 +376,20 @@
       font-size: 13px; font-weight: 600;
       color: #ff7070;
     }
+    /* Italic explanatory note shown when the matte picker is disabled
+       because the image isn't currently uploaded to the TV. */
+    .sl-modal-matte-lock {
+      margin-top: 4px;
+      text-align: center;
+      font-size: 12px;
+      color: #b6aba4;
+      font-style: italic;
+    }
+    .sl-modal-controls select:disabled,
+    .sl-modal-controls .sl-modal-toggle:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
     /* Per-image matte picker — bottom-right of each thumb */
     .sl-thumb-matte {
       position: absolute; right: 3px; bottom: 3px;
@@ -657,7 +671,7 @@
       </div>
       <div class="card-footer">
         <a class="bmc-link" href="https://buymeacoffee.com/kohlerryan" target="_blank" rel="noopener noreferrer">☕ Buy me a coffee</a>
-        <span class="version-tag">v0.4.1</span>
+        <span class="version-tag">v0.4.2</span>
       </div>
     </div>
   </div>
@@ -2081,14 +2095,13 @@
     }
     // Per-type base thickness (px) for the thumbnail-scale preview. Values are
     // intentionally separated so each style is visually distinguishable at a
-    // glance — shadowbox is the deepest mount, modern the thinnest.
-    // Multi-image types (triptych/mix/squares) and panoramic are previewed
-    // as flat mattes here (the single-image preview can't faithfully render
-    // their multi-cell composition); thickness still differentiates them.
+    // glance — shadowbox is the deepest mount, modern the thinnest. For
+    // multi-cell types (triptych/squares/mix) and panoramic the thickness
+    // applies to the outer border; internal dividers are derived from it.
     const _MATTE_THICK_MAP = {
       shadowbox: 10, modernthin: 4, modern: 10, modernwide: 32,
       flexible: 5,
-      panoramic: 14, triptych: 8, squares: 10, mix: 12
+      panoramic: 14, triptych: 8, squares: 8, mix: 8
     };
     // Per-type base thickness (px) for the modal-scale preview. The modal
     // shows a near-fullscreen image so the matte band can be much chunkier;
@@ -2096,7 +2109,7 @@
     const _MATTE_THICK_MAP_MODAL = {
       shadowbox: 56, modernthin: 16, modern: 44, modernwide: 128,
       flexible: 22,
-      panoramic: 64, triptych: 36, squares: 48, mix: 56
+      panoramic: 64, triptych: 36, squares: 36, mix: 36
     };
     // Build a per-type CSS style string that visually approximates each Samsung
     // matte style (not just a flat colored border). `scale` is 'thumb' or 'modal'.
@@ -2110,11 +2123,61 @@
       const isModal = scale === 'modal';
       const T = (isModal ? _MATTE_THICK_MAP_MODAL : _MATTE_THICK_MAP)[type]
                 || (isModal ? 22 : 5);
+      // Helper: a flat stripe of the matte color, used as background-image
+      // layers for internal dividers (triptych/squares/mix) and the
+      // letterbox bands of panoramic. Combined with no-repeat + explicit
+      // background-size, each gradient paints only the band we want.
+      const bar = `linear-gradient(${c},${c})`;
+      // Internal divider thickness — thinner than the outer matte so the
+      // image still reads through the cells.
+      const D = isModal ? Math.max(8, Math.round(T * 0.5))
+                        : Math.max(2, Math.round(T * 0.7));
       switch (type) {
         case 'shadowbox': {
           // Frame + inner shadow at the inner edge to evoke a recessed mount.
           const blur = isModal ? 14 : 4;
           return `box-shadow: inset 0 0 0 ${T}px ${c}, inset 0 0 ${blur}px ${T}px rgba(0,0,0,0.55);`;
+        }
+        case 'panoramic': {
+          // Letterbox-style: thick mattes on top + bottom only, no side bars,
+          // evoking the panoramic crop.
+          return [
+            `background-image: ${bar}, ${bar}`,
+            `background-size: 100% ${T}px, 100% ${T}px`,
+            `background-position: left top, left bottom`,
+            `background-repeat: no-repeat`,
+          ].join('; ') + ';';
+        }
+        case 'triptych': {
+          // Outer border + two vertical dividers at 1/3 and 2/3 of the width.
+          return [
+            `box-shadow: inset 0 0 0 ${T}px ${c}`,
+            `background-image: ${bar}, ${bar}`,
+            `background-size: ${D}px 100%, ${D}px 100%`,
+            `background-position: calc(33.333% - ${D / 2}px) 0, calc(66.666% - ${D / 2}px) 0`,
+            `background-repeat: no-repeat`,
+          ].join('; ') + ';';
+        }
+        case 'squares': {
+          // Outer border + a 3×3 grid (two vertical + two horizontal dividers).
+          return [
+            `box-shadow: inset 0 0 0 ${T}px ${c}`,
+            `background-image: ${bar}, ${bar}, ${bar}, ${bar}`,
+            `background-size: ${D}px 100%, ${D}px 100%, 100% ${D}px, 100% ${D}px`,
+            `background-position: calc(33.333% - ${D / 2}px) 0, calc(66.666% - ${D / 2}px) 0, 0 calc(33.333% - ${D / 2}px), 0 calc(66.666% - ${D / 2}px)`,
+            `background-repeat: no-repeat`,
+          ].join('; ') + ';';
+        }
+        case 'mix': {
+          // Outer border + a single cross divider (one vertical + one
+          // horizontal at center) to convey a "mixed" 2×2 composition.
+          return [
+            `box-shadow: inset 0 0 0 ${T}px ${c}`,
+            `background-image: ${bar}, ${bar}`,
+            `background-size: ${D}px 100%, 100% ${D}px`,
+            `background-position: calc(50% - ${D / 2}px) 0, 0 calc(50% - ${D / 2}px)`,
+            `background-repeat: no-repeat`,
+          ].join('; ') + ';';
         }
         case 'modern':
         case 'modernwide':
@@ -2193,6 +2256,18 @@
       if ($matteSel) {
         _populateMatteSelects(curMatte || 'none');
       }
+      // Lock matte controls until the image is actually uploaded to the TV.
+      // The TV can only validate a matte against an image that's present in
+      // "My Photos", so until then we can't tell if the user's choice will
+      // be accepted. The persisted override is kept either way — it'll be
+      // applied (and validated, with auto-revert on -7) at upload time.
+      const $type = _slModalEl.querySelector('#sl-modal-matte-type');
+      const $swatches = _slModalEl.querySelector('#sl-modal-matte-color');
+      const $lock = _slModalEl.querySelector('.sl-modal-matte-lock');
+      const onTv = Array.isArray(slideshowCurrentPaths) && slideshowCurrentPaths.indexOf(img.path) !== -1;
+      if ($type) $type.disabled = !onTv;
+      if ($swatches) $swatches.classList.toggle('disabled', !onTv);
+      if ($lock) $lock.textContent = onTv ? '' : 'Matte picker unlocks once this image is uploaded to the TV.';
       const $toggle = _slModalEl.querySelector('.sl-modal-toggle');
       if ($toggle) {
         $toggle.classList.toggle('selected', isSel);
@@ -2238,6 +2313,7 @@
             <div id="sl-modal-matte-color" class="sl-matte-swatches" role="radiogroup" aria-label="Matte color"></div>
             <button type="button" class="sl-modal-toggle">Add to selection</button>
           </div>
+          <div class="sl-modal-matte-lock"></div>
           <div class="sl-modal-msg" role="status" aria-live="polite"></div>
         </div>`;
       document.body.appendChild(overlay);
@@ -2266,6 +2342,13 @@
       function _commitMatteChange() {
         const cur = _slModalList[_slModalIdx];
         if (!cur) return;
+        // Refuse to publish a matte change for an image that isn't on the TV
+        // yet — the TV can't validate the combo, so we'd just persist a
+        // potentially-bad override silently. _renderSlModalContents disables
+        // the controls in that case; this is defence-in-depth.
+        if (!Array.isArray(slideshowCurrentPaths) || slideshowCurrentPaths.indexOf(cur.path) === -1) {
+          return;
+        }
         const tval = $matteType.value || 'none';
         if (tval === '__probing__') return;
         const cval = $matteColor.dataset.color || '';
@@ -2524,6 +2607,11 @@
         slideshowMaxUploads = parseInt(data.max_uploads || 10, 10);
         if ($slMaxUploads && !$slMaxUploads.dataset.dirty) $slMaxUploads.value = slideshowMaxUploads;
         slideshowCurrentPaths = data.current_paths || [];
+        // If the modal is open, refresh it so the matte picker lock state
+        // reflects the latest uploaded-to-TV set.
+        if (_slModalEl) {
+          try { _renderSlModalContents(); } catch(_) {}
+        }
         slideshowOverridePaths = data.override_paths || [];
         const mode = data.mode || 'auto';
         slideshowMode = mode;
