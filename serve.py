@@ -5,54 +5,11 @@ import json
 import time
 import signal
 import functools
-import urllib.request
 from urllib.parse import urlparse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 INDEX_PATH = "/app/www/index.html"
 ROOT_DIR = "/"
-
-# Cache the TV's /api/v2/ device-info response so back-to-back blocklist
-# requests don't each pay a network round-trip. Refreshed at most every
-# _TV_DEVICE_TTL seconds. Captures (model, firmware_version) used to detect
-# when a Tizen update has changed which matte combos the TV accepts.
-_TV_DEVICE_TTL = 300  # seconds
-_tv_device_cache = {'at': 0.0, 'data': {}}
-
-
-def _get_cached_tv_device_info():
-    now = time.time()
-    if now - _tv_device_cache['at'] < _TV_DEVICE_TTL and _tv_device_cache['data']:
-        return _tv_device_cache['data']
-    ip = os.environ.get('SAMSUNG_TV_ART_TV_IP', '').strip()
-    info = {}
-    if ip:
-        try:
-            with urllib.request.urlopen(f'http://{ip}:8001/api/v2/', timeout=2.0) as r:
-                raw = json.loads(r.read().decode('utf-8') or '{}')
-            dev = raw.get('device') if isinstance(raw, dict) else None
-            if isinstance(dev, dict):
-                # Many Samsung Frame TVs report firmwareVersion as the literal
-                # string 'Unknown' \u2014 suppress so we don't render a noisy
-                # placeholder in the diagnostic payload.
-                fw = (dev.get('firmwareVersion') or dev.get('version') or '').strip()
-                if fw.lower() == 'unknown':
-                    fw = ''
-                info = {
-                    'model':    dev.get('modelName') or dev.get('model') or '',
-                    'os':       dev.get('OS') or '',
-                    'name':     dev.get('name') or '',
-                    'wifi_mac': dev.get('wifiMac') or '',
-                    'type':     dev.get('type') or '',
-                }
-                if fw:
-                    info['firmware_version'] = fw
-        except Exception:
-            info = {}
-    _tv_device_cache['at'] = now
-    _tv_device_cache['data'] = info
-    return info
-
 
 class FallbackHandler(SimpleHTTPRequestHandler):
     # directory is passed via functools.partial
@@ -250,48 +207,9 @@ class FallbackHandler(SimpleHTTPRequestHandler):
             return self._json(200, self._read_ui_mqtt())
         if self.path.startswith('/api/collections-list'):
             return self._handle_api_get_collections_list()
-        if self.path.startswith('/api/matte_blocklist'):
-            return self._handle_api_get_matte_blocklist()
         if self.path in ('/favicon.png', '/favicon.ico'):
             return self._serve_favicon()
         return super().do_GET()
-
-    def _handle_api_get_matte_blocklist(self):
-        """Return the global matte blocklist JSON written by uploader.py's
-        one-shot probe (see _matte_probe_global). Returns an empty stub if
-        probing has never been run.
-
-        Also fetches the TV's current identity (model + firmware) from its
-        unauthenticated REST endpoint and compares it to what was captured
-        at probe time. If they differ, the blocklist is marked `stale: true`
-        and `bad_combos` is cleared server-side so the UI doesn't hide combos
-        based on a previous firmware's behavior. The probed/current device
-        info is always returned for diagnostics."""
-        path = '/data/matte_blocklist.json'
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.loads(f.read() or '{}')
-        except FileNotFoundError:
-            data = {'bad_combos': [], 'probed_at': None, 'probe_in_progress': False}
-        except Exception as e:
-            return self._json(500, {'error': str(e)})
-        current = _get_cached_tv_device_info()
-        probed = data.get('tv_device') if isinstance(data.get('tv_device'), dict) else {}
-        # Only compare model here \u2014 the TV's REST endpoint commonly reports
-        # firmwareVersion as 'Unknown', and the authoritative invariant
-        # (Art API version) is not visible to this process. uploader.py
-        # detects real Art API changes on next restart and re-probes.
-        stale = False
-        if probed and current:
-            if probed.get('model') and current.get('model') and probed['model'] != current['model']:
-                stale = True
-        data['current_tv_device'] = current
-        data['stale'] = stale
-        data.setdefault('probe_in_progress', False)
-        if stale:
-            data['bad_combos'] = []
-        return self._json(200, data)
-
     def _serve_favicon(self):
         favicon_path = '/app/www/favicon.png'
         try:

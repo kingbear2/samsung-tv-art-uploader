@@ -296,6 +296,27 @@
       position: absolute; inset: 0;
       pointer-events: none;
     }
+    /* Spinner overlay shown while a matte change is awaiting TV ack. */
+    .sl-modal-img-frame.is-pending::before {
+      content: '';
+      position: absolute; inset: 0;
+      background: rgba(0,0,0,0.35);
+      pointer-events: none;
+      z-index: 1;
+    }
+    .sl-modal-img-frame.is-pending::after {
+      content: '';
+      position: absolute; top: 50%; left: 50%;
+      width: 64px; height: 64px;
+      margin: -32px 0 0 -32px;
+      border: 6px solid rgba(255,255,255,0.18);
+      border-top-color: #6ab0f5;
+      border-radius: 50%;
+      animation: sl-matte-spin 0.9s linear infinite;
+      pointer-events: none;
+      z-index: 2;
+    }
+    @keyframes sl-matte-spin { to { transform: rotate(360deg); } }
     .sl-modal-meta {
       color: #b6aba4; font-size: 12px; text-align: center;
       max-width: 80vw;
@@ -347,6 +368,14 @@
       background: rgba(47,127,191,0.25); border-color: #2f7fbf; color: #6ab0f5;
     }
     .sl-modal-controls .sl-modal-toggle:hover { border-color: #6ab0f5; color: #fff; }
+    /* Red inline error banner inside the modal (e.g. matte rejected by TV). */
+    .sl-modal-msg {
+      min-height: 1.2em;
+      margin-top: 6px;
+      text-align: center;
+      font-size: 13px; font-weight: 600;
+      color: #ff7070;
+    }
     /* Per-image matte picker — bottom-right of each thumb */
     .sl-thumb-matte {
       position: absolute; right: 3px; bottom: 3px;
@@ -628,7 +657,7 @@
       </div>
       <div class="card-footer">
         <a class="bmc-link" href="https://buymeacoffee.com/kohlerryan" target="_blank" rel="noopener noreferrer">☕ Buy me a coffee</a>
-        <span class="version-tag">v0.4.0</span>
+        <span class="version-tag">v0.4.1</span>
       </div>
     </div>
   </div>
@@ -774,8 +803,6 @@
         scheduleAvailableRetry();
         // Ask the backend to fetch the TV's available matte types/colors and publish them retained.
         requestMatteOptions();
-        // Pull the global matte blocklist (probed once per firmware in uploader.py).
-        loadMatteBlocklist();
         // Retained messages arrive as a burst after subscribe. Defer sync so the
         // trigger text reflects the fully-settled state after all messages land.
         setTimeout(() => { syncTriggerText(); updateButtons(); }, 600);
@@ -959,12 +986,44 @@
               }
               if (cmd === 'slideshow/matte/set') {
                 const $m = document.getElementById('sl-msg');
-                if ($m && status === 'error') {
-                  const fname = ack.path ? ack.path.split('/').pop() : '';
-                  const mlabel = ack.matte || '';
-                  $m.textContent = `Matte rejected by TV: ${mlabel}${fname ? ' on ' + fname : ''}. Try a different color/style combo.`;
-                  $m.style.color = '#e08080';
-                  setTimeout(()=>{ if($m){ $m.textContent=''; $m.style.color=''; } }, 8000);
+                const path = ack.path;
+                if (status === 'ok') {
+                  // TV accepted — now apply the pending matte to local state
+                  // and re-render the preview/selects/grid.
+                  if (path && Object.prototype.hasOwnProperty.call(_pendingMatte, path)) {
+                    const pending = _pendingMatte[path];
+                    if (!pending || pending === 'none') delete slideshowMattes[path];
+                    else slideshowMattes[path] = pending;
+                    delete _pendingMatte[path];
+                  }
+                  _setModalPending(false);
+                  if (_slModalEl) _renderSlModalContents();
+                  renderSlideshowGrid();
+                } else if (status === 'error') {
+                  const errText = `Matte rejected by TV for this image. Try a different color/style combo.`;
+                  if ($m) {
+                    $m.textContent = errText;
+                    $m.style.color = '#e08080';
+                    setTimeout(()=>{ if($m){ $m.textContent=''; $m.style.color=''; } }, 8000);
+                  }
+                  // Drop the pending desire and force the override back to
+                  // 'none' locally so the UI clearly shows the change didn't
+                  // stick (the TV is still on whatever it was before).
+                  if (path) {
+                    delete _pendingMatte[path];
+                    delete slideshowMattes[path];
+                  }
+                  _setModalPending(false);
+                  if (_slModalEl) {
+                    _renderSlModalContents();
+                    const $mm = _slModalEl.querySelector('.sl-modal-msg');
+                    if ($mm) {
+                      $mm.textContent = errText;
+                      clearTimeout($mm._clearTimer);
+                      $mm._clearTimer = setTimeout(()=>{ if($mm) $mm.textContent=''; }, 8000);
+                    }
+                  }
+                  renderSlideshowGrid();
                 }
               }
               if (cmd === 'slideshow/preview/request') {
@@ -1842,58 +1901,16 @@
       }
     }
     function _comboKey(t, c) { return c ? `${t}_${c}` : t; }
-    // ----- Global matte blocklist (single-shot probe in uploader.py) -----
-    // uploader.py probes every (type, color) combo once against the standby
-    // image after the TV is reachable, and persists the failures to
-    // /data/matte_blocklist.json keyed by TV model+firmware. The UI fetches
-    // that list and simply removes the bad combos from the matte dropdown.
-    // The probe re-runs automatically when the TV's fingerprint changes
-    // (e.g. firmware update); the server marks the cache `stale` until then.
-    const slideshowMatteBlocklist = {
-      probed: false,
-      stale: false,
-      probeInProgress: false,
-      badCombos: new Set(),      // Set of `${type}_${color}` keys
-      probedTvDevice: null,
-      currentTvDevice: null,
-    };
-    let _matteBlocklistPollTimer = null;
-    async function loadMatteBlocklist() {
-      try {
-        const r = await fetch('/api/matte_blocklist', { cache: 'no-store' });
-        if (!r.ok) return;
-        const d = await r.json();
-        const wasProbing = slideshowMatteBlocklist.probeInProgress;
-        slideshowMatteBlocklist.probed = !!(d && d.probed_at);
-        slideshowMatteBlocklist.stale = !!(d && d.stale);
-        slideshowMatteBlocklist.probeInProgress = !!(d && d.probe_in_progress);
-        slideshowMatteBlocklist.probedTvDevice = (d && d.tv_device) || null;
-        slideshowMatteBlocklist.currentTvDevice = (d && d.current_tv_device) || null;
-        const bad = ((d && d.bad_combos) || []).map(([t, c]) => _comboKey(t, c));
-        slideshowMatteBlocklist.badCombos = new Set(bad);
-        if (slideshowMatteBlocklist.stale) {
-          console.warn('Matte blocklist marked stale (TV firmware changed); waiting for re-probe',
-            slideshowMatteBlocklist.probedTvDevice, '->', slideshowMatteBlocklist.currentTvDevice);
-        }
-        // While probing, poll every 10s and refresh the modal if it's open
-        // so the dropdown unlocks the moment the probe finishes.
-        if (slideshowMatteBlocklist.probeInProgress) {
-          _scheduleMatteBlocklistPoll();
-        } else if (wasProbing) {
-          // Just finished — re-render the modal's dropdown with the now-known
-          // option list (the modal pre-built it empty at open time).
-          if (_slModalEl) _rebuildSlModalMatteOptions();
-        }
-      } catch (e) { /* ignore */ }
-    }
-    function _scheduleMatteBlocklistPoll() {
-      if (_matteBlocklistPollTimer) return;
-      _matteBlocklistPollTimer = setTimeout(async () => {
-        _matteBlocklistPollTimer = null;
-        await loadMatteBlocklist();
-        if (slideshowMatteBlocklist.probeInProgress) _scheduleMatteBlocklistPoll();
-      }, 10000);
-    }
+    // ----- Matte support detection -----
+    // get_matte_list() on the TV returns EVERY layout the model supports,
+    // not just the ones that will succeed on a given image. Filtering by
+    // image is too expensive (Samsung's own app uses a custom in-firmware
+    // path we can't replicate over the API). We therefore offer the full
+    // list and react to the TV's error -7 at apply time: the matte/set
+    // handler in uploader.py surfaces the rejection via MQTT ack so the
+    // UI can show a red toast; the slideshow reapply path drops the
+    // override back to 'none' so we don't retry forever.
+    const slideshowMatteBlocklist = { badCombos: new Set() };
     function _rebuildSlModalMatteOptions() {
       if (!_slModalEl) return;
       const cur = _slModalList && _slModalList[_slModalIdx];
@@ -1907,15 +1924,6 @@
       const $type = _slModalEl.querySelector('#sl-modal-matte-type');
       const $color = _slModalEl.querySelector('#sl-modal-matte-color');
       if (!$type || !$color) return;
-      if (slideshowMatteBlocklist.probeInProgress) {
-        $type.innerHTML = '<option value="__probing__">Probing matte support…</option>';
-        $color.innerHTML = '<span class="sl-matte-empty">…</span>';
-        $type.disabled = true;
-        $color.classList.add('disabled');
-        $color.dataset.color = '';
-        $type.title = 'Matte probe is still running; please wait';
-        return;
-      }
       $type.disabled = false; $type.title = '';
       const want = _splitMatteId(wantId || 'none');
       const types = matteTypeOptions();
@@ -2126,6 +2134,14 @@
     let _slModalEl = null;
     let _slModalList = [];
     let _slModalIdx = 0;
+    // Map of path -> requested matte id awaiting TV ack. Used to defer the
+    // local state + preview update until the TV confirms the change.
+    const _pendingMatte = Object.create(null);
+    function _setModalPending(on) {
+      if (!_slModalEl) return;
+      const $frame = _slModalEl.querySelector('.sl-modal-img-frame');
+      if ($frame) $frame.classList.toggle('is-pending', !!on);
+    }
     function closeSlideshowModal() {
       if (_slModalEl) {
         _slModalEl.remove();
@@ -2186,6 +2202,8 @@
       const $next = _slModalEl.querySelector('.sl-modal-nav.next');
       if ($prev) $prev.disabled = _slModalIdx <= 0;
       if ($next) $next.disabled = _slModalIdx >= _slModalList.length - 1;
+      // Sync spinner to the (possibly different) current image's pending state.
+      _setModalPending(Object.prototype.hasOwnProperty.call(_pendingMatte, img.path));
     }
     function openSlideshowModal(list, index) {
       // Backwards-compat: a single img object may be passed.
@@ -2220,6 +2238,7 @@
             <div id="sl-modal-matte-color" class="sl-matte-swatches" role="radiogroup" aria-label="Matte color"></div>
             <button type="button" class="sl-modal-toggle">Add to selection</button>
           </div>
+          <div class="sl-modal-msg" role="status" aria-live="polite"></div>
         </div>`;
       document.body.appendChild(overlay);
       _slModalEl = overlay;
@@ -2251,12 +2270,18 @@
         if (tval === '__probing__') return;
         const cval = $matteColor.dataset.color || '';
         const val = _joinMatteId(tval, cval);
-        if (val === 'none') delete slideshowMattes[cur.path];
-        else slideshowMattes[cur.path] = val;
+        // Don't update preview or local state yet — wait for the TV ack to
+        // confirm the matte was accepted. Show a spinner over the image so
+        // the user knows we're working on it.
+        _pendingMatte[cur.path] = val;
         publishMatte(cur.path, val);
-        const $preview = overlay.querySelector('.sl-modal-matte-preview');
-        if ($preview) $preview.setAttribute('style', matteCssForModal(slideshowMattes[cur.path] || ''));
-        renderSlideshowGrid();
+        // Clear any prior error message immediately on a new attempt.
+        const $mm = overlay.querySelector('.sl-modal-msg');
+        if ($mm) {
+          clearTimeout($mm._clearTimer);
+          $mm.textContent = '';
+        }
+        _setModalPending(true);
       }
       $matteType.addEventListener('change', () => {
         // Repopulate color list for the new type (defaults to first alpha color).

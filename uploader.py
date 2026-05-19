@@ -382,30 +382,12 @@ class monitor_and_display:
         self.matte_overrides_path = '/data/matte_overrides.json'
         self._matte_overrides = {}
         self._matte_options_cache = None  # {'matte_types':[...], 'matte_colors':[...]}
-        # ── Per-image matte probe state ─────────────────────────────────────
-        # Runs in the background; for each uploaded image, exhaustively tests
-        # every (matte_type, color) combo against the TV and records which ones
-        # the TV rejects with error -7. Results are persisted by basename and
-        # invalidated when the TV's model/firmware fingerprint changes (Tizen
-        # updates can change which combos the TV accepts).
-        #
-        # Single global probe (not per-image): we initially tried probing each
-        # uploaded image and learned (a) the TV's -7 rejections are nearly
-        # uniform across images, (b) the rare per-image variances are
-        # unreliable — combos the TV accepted during probe still threw -7
-        # later at slideshow time — and (c) the per-upload churn isn't worth
-        # the noise. We now probe ONCE against the standby image at startup
-        # (when no cached blocklist exists, or when the TV fingerprint has
-        # changed) and reuse the result for every image.
-        self.matte_blocklist_path = '/data/matte_blocklist.json'
-        self._matte_bad_combos = []           # list of [type, color] currently rejected by TV
-        self._matte_blocklist_tv_device = {}  # fingerprint captured when blocklist was written
-        self._matte_probe_tv_fp = {}          # current TV fingerprint; populated at startup
-        self._matte_probe_task = None         # one-shot global probe task handle
-        self._matte_probe_in_progress = False
-        # Tunable via env so users can slow it down further if the TV gets unhappy.
-        self._matte_probe_delay   = float(os.environ.get('SAMSUNG_TV_ART_MATTE_PROBE_DELAY', '0.8'))
-        self._matte_probe_retries = int(os.environ.get('SAMSUNG_TV_ART_MATTE_PROBE_RETRIES', '2'))
+        # Matte support is reported by the TV via get_matte_list() (published
+        # to MQTT on demand). The TV lists EVERY layout it supports, not just
+        # the ones that will succeed for a given image — Samsung's own app
+        # decides per-image at render time, which is too expensive for us to
+        # replicate. Instead we surface every option and react to the TV's
+        # error -7 at apply time (revert + warn).
         self.ha_rest_enabled = False  # REST disabled in MQTT-only build
         self._mqtt = None
         self._presets_from_broker = False   # True once retained presets msg received
@@ -606,17 +588,6 @@ class monitor_and_display:
         except Exception:
             pass
 
-        # Initialize matte blocklist: fetch the TV's identity (sync REST call
-        # offloaded to a thread) and load any persisted blocklist from disk.
-        # The actual probe (one-shot, global, against the standby image) is
-        # scheduled later by _maybe_start_matte_probe() once standby is
-        # selected — we need a content_id on the TV to probe against.
-        try:
-            self._matte_probe_tv_fp = await asyncio.to_thread(self._matte_probe_fetch_tv_fingerprint)
-            self._load_matte_blocklist()
-        except Exception as e:
-            self.log.warning('Matte blocklist init failed (non-fatal): %s', e)
-        
         if self.on and self.tv is not None and not await self.tv.on():
             self.log.info('TV is off, exiting')
         else:
@@ -639,10 +610,6 @@ class monitor_and_display:
                     try:
                         await self.check_matte()
                         await self.ensure_standby_selected()
-                        # Standby is now on the TV — if we don't have a valid
-                        # cached blocklist for this firmware, fire off a
-                        # one-shot global probe in the background.
-                        self._maybe_start_matte_probe()
                         await self.cleanup_old_uploads()
                     except Exception as e:
                         self.log.warning('Startup TV setup error (non-fatal): %s', e)
@@ -1448,17 +1415,60 @@ class monitor_and_display:
                     except Exception:
                         pass
                 content_id = None
+                matte_for_upload = self._resolve_matte_for(path_rel_for_matte, os.path.basename(filename))
                 try:
-                    matte_for_upload = self._resolve_matte_for(path_rel_for_matte, os.path.basename(filename))
                     content_id = await self._upload_to_tv(file_data, file_type, matte_for_upload)
                     consecutive_failures = 0  # Reset on success
                 except AssertionError:
                     self.log.warning('file: %s failed to upload (empty response)', display_name)
                     consecutive_failures += 1
                 except Exception as e:
-                    self._warn_upload_compat(e)
-                    self.log.warning('file: %s failed to upload: %s', display_name, e)
-                    consecutive_failures += 1
+                    # If the failure was the TV rejecting an invalid matte
+                    # for this image (error -7), retry once with matte=none
+                    # and pin the per-image override to 'none' so we don't
+                    # repeat the same bad combo on future uploads. Matches
+                    # the slideshow-rotation reapply behaviour.
+                    if (matte_for_upload and matte_for_upload != 'none'
+                            and self._is_matte_minus_7(e)):
+                        self.log.warning(
+                            'file: %s upload rejected by TV (-7) with matte %r; '
+                            'retrying with matte=none and pinning override',
+                            display_name, matte_for_upload,
+                        )
+                        try:
+                            content_id = await self._upload_to_tv(file_data, file_type, 'none')
+                        except Exception as e2:
+                            self.log.warning('file: %s retry without matte also failed: %s', display_name, e2)
+                        if content_id:
+                            self._matte_overrides[path_rel_for_matte] = 'none'
+                            self._save_matte_overrides()
+                            self._publish_matte_overrides()
+                            consecutive_failures = 0
+                        else:
+                            consecutive_failures += 1
+                    else:
+                        self._warn_upload_compat(e)
+                        self.log.warning('file: %s failed to upload: %s', display_name, e)
+                        consecutive_failures += 1
+                # Some TV firmwares don't raise on a bad matte — they accept
+                # the upload call but return no content_id. Detect that here
+                # and apply the same retry-without-matte + pin-to-none path.
+                if (not content_id and matte_for_upload
+                        and matte_for_upload != 'none'):
+                    self.log.warning(
+                        'file: %s upload returned no content_id with matte %r; '
+                        'retrying with matte=none and pinning override',
+                        display_name, matte_for_upload,
+                    )
+                    try:
+                        content_id = await self._upload_to_tv(file_data, file_type, 'none')
+                    except Exception as e3:
+                        self.log.warning('file: %s retry without matte also failed: %s', display_name, e3)
+                    if content_id:
+                        self._matte_overrides[path_rel_for_matte] = 'none'
+                        self._save_matte_overrides()
+                        self._publish_matte_overrides()
+                        consecutive_failures = 0
                 
                 # If too many consecutive failures, try reconnecting to TV
                 if consecutive_failures >= max_consecutive_failures:
@@ -2632,240 +2642,16 @@ class monitor_and_display:
         except Exception as e:
             self.log.debug('MQTT matte_options publish failed: %s', e)
 
-    # ── Single-shot global matte probe ───────────────────────────────────────
-
-    def _matte_probe_fetch_tv_fingerprint(self):
-        """Synchronous REST GET to the TV's /api/v2/ endpoint to capture a
-        model+firmware identity. Returns {} on any failure. Called from a
-        thread executor (do not call directly from the event loop).
-
-        Note: many Samsung Frame TVs report `firmwareVersion: "Unknown"`
-        over REST. The Art API version (captured separately via WebSocket
-        in get_api_version) is the actual invariant we use for cache
-        invalidation — _matte_probe_refresh_api_version() folds it in once
-        the TV connection is established."""
-        ip = (self.ip or '').strip()
-        if not ip:
-            return {}
-        try:
-            with urllib.request.urlopen(f'http://{ip}:8001/api/v2/', timeout=3.0) as r:
-                raw = json.loads(r.read().decode('utf-8') or '{}')
-        except Exception:
-            return {}
-        dev = raw.get('device') if isinstance(raw, dict) else None
-        if not isinstance(dev, dict):
-            return {}
-        # Many Samsung Frame TVs report the literal string 'Unknown' for
-        # firmwareVersion over REST.  Treat that as missing so we don't
-        # save a noisy placeholder; real firmware strings (when reported)
-        # still flow through as diagnostic info.
-        fw = (dev.get('firmwareVersion') or dev.get('version') or '').strip()
-        if fw.lower() == 'unknown':
-            fw = ''
-        fp = {
-            'model':       dev.get('modelName') or dev.get('model') or '',
-            'os':          dev.get('OS') or '',
-            'name':        dev.get('name') or '',
-            'wifi_mac':    dev.get('wifiMac') or '',
-            'type':        dev.get('type') or '',
-            'api_version': '',  # filled in by _matte_probe_refresh_api_version
-        }
-        if fw:
-            fp['firmware_version'] = fw
-        return fp
-
-    def _matte_probe_refresh_api_version(self):
-        """Fold the Art API version (set by get_api_version) into the
-        cached TV fingerprint. Idempotent."""
-        api_v = getattr(self, 'api_version_str', '') or ''
-        if not api_v:
-            return
-        if self._matte_probe_tv_fp is None:
-            self._matte_probe_tv_fp = {}
-        self._matte_probe_tv_fp['api_version'] = api_v
-
-    def _matte_probe_fp_matches(self, a, b):
-        """Two fingerprints 'match' when their model + Art API version
-        match. firmware_version is intentionally NOT compared because the
-        TV's REST endpoint commonly reports it as 'Unknown' (which would
-        silently match itself forever). If either side is missing
-        api_version (e.g. during startup before the TV WebSocket is up),
-        fall back to model-only comparison; the api_version check is
-        re-run later by _maybe_start_matte_probe once both sides are known.
-        Empty fingerprints never match."""
-        if not a or not b:
-            return False
-        if a.get('model') != b.get('model'):
-            return False
-        a_api = a.get('api_version') or ''
-        b_api = b.get('api_version') or ''
-        if a_api and b_api:
-            return a_api == b_api
-        return True  # model matches; api_version not yet comparable
-
-    def _load_matte_blocklist(self):
-        """Load /data/matte_blocklist.json. Discards the cache when the
-        recorded TV fingerprint doesn't match the current TV (firmware
-        update) \u2014 the probe will be re-run on startup."""
-        if not os.path.isfile(self.matte_blocklist_path):
-            return
-        try:
-            with open(self.matte_blocklist_path, 'r', encoding='utf-8') as f:
-                data = json.load(f) or {}
-        except Exception as e:
-            self.log.warning('Failed to load matte blocklist: %s', e)
-            return
-        cached_fp = data.get('tv_device') or {}
-        current_fp = self._matte_probe_tv_fp or {}
-        if cached_fp and current_fp and not self._matte_probe_fp_matches(cached_fp, current_fp):
-            self.log.info('Matte blocklist discarded \u2014 TV fingerprint changed '
-                          '(was %s/api %s, now %s/api %s)',
-                          cached_fp.get('model'), cached_fp.get('api_version') or '?',
-                          current_fp.get('model'), current_fp.get('api_version') or '?')
-            return
-        # If the file is a probe-in-progress stub from a previous run that was
-        # killed mid-probe, don't treat its empty bad_combos as authoritative \u2014
-        # leave _matte_blocklist_tv_device unset so _maybe_start_matte_probe
-        # will re-run the probe.
-        if data.get('probe_in_progress'):
-            self.log.info('Matte blocklist found in-progress stub \u2014 will re-probe')
-            return
-        bad = data.get('bad_combos') or []
-        # Normalize to list-of-pairs.
-        normalized = []
-        for item in bad:
-            if isinstance(item, (list, tuple)) and len(item) == 2:
-                normalized.append([str(item[0]), str(item[1])])
-        self._matte_bad_combos = normalized
-        self._matte_blocklist_tv_device = cached_fp
-        self.log.info('Loaded matte blocklist: %d rejected combo(s)', len(normalized))
-
-    def _save_matte_blocklist(self, probe_in_progress=False):
-        try:
-            os.makedirs(os.path.dirname(self.matte_blocklist_path) or '.', exist_ok=True)
-            payload = {
-                'tv_device':         self._matte_probe_tv_fp,
-                'bad_combos':        self._matte_bad_combos,
-                'probe_in_progress': bool(probe_in_progress),
-                'probed_at':         None if probe_in_progress else datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
-            }
-            with open(self.matte_blocklist_path, 'w', encoding='utf-8') as f:
-                json.dump(payload, f, indent=2)
-            if not probe_in_progress:
-                self._matte_blocklist_tv_device = dict(self._matte_probe_tv_fp or {})
-        except Exception as e:
-            self.log.warning('Failed to save matte blocklist: %s', e)
-
     @staticmethod
-    def _matte_probe_is_minus_7(exc):
+    def _is_matte_minus_7(exc):
+        """The Samsung Art API returns error code -7 when it rejects a matte
+        combo for an image (or, harmlessly, when 'none' is reapplied to an
+        image that already has no matte). We treat -7 specially in two places:
+          1. `slideshow/matte/set` handler — surface a red toast and revert.
+          2. `_reapply_matte_for` (per-cycle reapply) — drop the override back
+             to 'none' so we don't keep retrying a combo the TV won't accept."""
         msg = str(exc)
         return 'error number -7' in msg or "'-7'" in msg or 'errno -7' in msg
-
-    async def _matte_probe_try(self, content_id, combo):
-        """Apply one matte combo with retries on transient -7 errors.
-        Returns True if the TV accepted the combo, False if it consistently
-        rejected (-7) or another error class occurred."""
-        attempts = self._matte_probe_retries + 1
-        for attempt in range(attempts):
-            try:
-                await self.tv.change_matte(content_id, combo, portrait_matte=combo)
-                return True
-            except Exception as e:
-                if not self._matte_probe_is_minus_7(e):
-                    return False  # non-(-7) errors are usually fatal; don't waste retries
-                if attempt < attempts - 1:
-                    await asyncio.sleep(self._matte_probe_delay)
-        return False
-
-    async def _matte_probe_current_matte(self, content_id):
-        """Best-effort: read the current matte for a content_id so we can
-        restore it after the probe sweep. Returns 'none' on any failure."""
-        try:
-            items = await self.tv.available('MY-C0002', timeout=10)
-            for it in (items or []):
-                if isinstance(it, dict) and it.get('content_id') == content_id:
-                    return it.get('matte_id') or 'none'
-        except Exception:
-            pass
-        return 'none'
-
-    def _maybe_start_matte_probe(self):
-        """Schedule the one-shot global probe iff:
-          - we don't already have a probe task running,
-          - the TV fingerprint changed since the cached blocklist was written
-            (or there is no cached blocklist at all).
-        Called from start_monitoring after standby is selected; safe to call
-        multiple times."""
-        if self._matte_probe_in_progress or (self._matte_probe_task and not self._matte_probe_task.done()):
-            return
-        # Fold the Art API version into the fingerprint now that the TV
-        # connection is up (get_api_version has run by this point).
-        self._matte_probe_refresh_api_version()
-        cached_fp = self._matte_blocklist_tv_device or {}
-        current_fp = self._matte_probe_tv_fp or {}
-        # If we have a cached blocklist and the fingerprint still matches, skip.
-        if cached_fp and current_fp and self._matte_probe_fp_matches(cached_fp, current_fp):
-            return
-        # Need a content_id to probe against \u2014 standby is the obvious choice.
-        if not self.standby_content_id:
-            self.log.debug('Matte probe skipped \u2014 no standby content_id yet')
-            return
-        self.log.info('Matte blocklist missing or stale \u2014 scheduling one-shot probe against standby (%s)',
-                      self.standby_content_id)
-        self._matte_probe_task = asyncio.create_task(self._matte_probe_global(self.standby_content_id))
-
-    async def _matte_probe_global(self, content_id):
-        """Probe every (type, color) combo against ONE image (standby).
-        The result becomes the global blocklist, reused for every image in
-        the slideshow.
-
-        'none' is intentionally not probed \u2014 it's the UI's clear/reset path
-        and the TV NACKs a redundant 'none' set with -7 when the image
-        already has no matte; we must never blocklist it."""
-        if self.tv is None or not content_id:
-            return
-        self._matte_probe_in_progress = True
-        try:
-            await self._ensure_matte_options_cache()
-            opts = self._matte_options_cache or {}
-            types  = [t for t in (opts.get('matte_types')  or []) if t and t != 'none']
-            colors = [c for c in (opts.get('matte_colors') or []) if c]
-            combos = [(t, c) for t in types for c in colors]
-            if not combos:
-                self.log.warning('Matte probe: no combos to test')
-                return
-            # Write an in-progress stub immediately so the UI can show a
-            # "Probing matte support…" placeholder instead of letting the
-            # user pick combos that may be rejected.
-            self._matte_bad_combos = []
-            self._save_matte_blocklist(probe_in_progress=True)
-            original_matte = await self._matte_probe_current_matte(content_id)
-            self.log.info('Matte probe starting: %d combos against %s', len(combos), content_id)
-            bad_combos = []
-            for idx, (t, c) in enumerate(combos):
-                combo_str = f'{t}_{c}'
-                ok = await self._matte_probe_try(content_id, combo_str)
-                if not ok:
-                    bad_combos.append([t, c])
-                if (idx + 1) % 10 == 0:
-                    self.log.debug('Matte probe progress: %d/%d', idx + 1, len(combos))
-                await asyncio.sleep(self._matte_probe_delay)
-            # Restore the matte we found on entry.
-            try:
-                await self.tv.change_matte(content_id, original_matte, portrait_matte=original_matte)
-            except Exception as e:
-                self.log.debug('Matte probe: could not restore original %s for %s: %s',
-                               original_matte, content_id, e)
-            self._matte_bad_combos = bad_combos
-            self._save_matte_blocklist()
-            self.log.info('Matte probe done: %d good, %d bad',
-                          len(combos) - len(bad_combos), len(bad_combos))
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            self.log.warning('Matte probe: unexpected error: %s', e)
-        finally:
-            self._matte_probe_in_progress = False
 
     def _publish_slideshow_state(self):
         """Publish current slideshow mode, settings, and active paths to MQTT."""
@@ -3611,7 +3397,7 @@ class monitor_and_display:
                                 # The TV NACKs a redundant 'none' set with -7 when the image
                                 # already has no matte. That's not a real failure \u2014 the user's
                                 # intent (no matte) is already satisfied. Treat as success.
-                                if effective == 'none' and self._matte_probe_is_minus_7(ex):
+                                if effective == 'none' and self._is_matte_minus_7(ex):
                                     self.log.debug('change_matte none for %s: TV says already none (-7); treating as ok', path)
                                     self._publish_ack('slideshow/matte/set', 'ok', 'Matte already none', req_id, extra={'path': path, 'matte': effective})
                                     return
@@ -3892,7 +3678,25 @@ class monitor_and_display:
                 await self.tv.change_matte(content_id, effective, portrait_matte=effective)
             except Exception as ex:
                 # Redundant 'none' set on an already-clear image throws -7; benign.
-                if effective == 'none' and self._matte_probe_is_minus_7(ex):
+                if effective == 'none' and self._is_matte_minus_7(ex):
+                    return
+                # TV rejected this matte for this image (the TV's matte_list
+                # advertises every layout it supports, not every layout that
+                # will succeed on every image). Pin this image to 'none' so we
+                # don't keep retrying every cycle, then reapply none.
+                if self._is_matte_minus_7(ex) and path_rel:
+                    self.log.warning('TV rejected matte %s for %s (-7); pinning image to none',
+                                     effective, path_rel)
+                    self._matte_overrides[path_rel] = 'none'
+                    try:
+                        self._save_matte_overrides()
+                        self._publish_matte_overrides()
+                    except Exception:
+                        pass
+                    try:
+                        await self.tv.change_matte(content_id, 'none', portrait_matte='none')
+                    except Exception:
+                        pass
                     return
                 raise
             self.log.debug('reapplied matte %s for content_id=%s (path=%s)', effective, content_id, path_rel)
