@@ -3370,6 +3370,12 @@ class monitor_and_display:
                     if not path:
                         self._publish_ack('slideshow/matte/set', 'error', 'Missing path', req_id)
                         return
+                    # Snapshot the pre-change override state BEFORE we mutate
+                    # self._matte_overrides, so the -7 rollback path below can
+                    # truly restore the previous value (capturing after the
+                    # mutation would just re-save the bad matte).
+                    had_override = path in self._matte_overrides
+                    prev_override = self._matte_overrides.get(path)
                     # Empty matte (or 'default'/'__default__') clears the override → fall back to global
                     if matte in ('', 'default', '__default__'):
                         self._matte_overrides.pop(path, None)
@@ -3386,9 +3392,6 @@ class monitor_and_display:
                             content_id = v.get('content_id')
                             break
                     if content_id:
-                        # Capture the pre-change state so we can revert if the TV rejects the combo.
-                        had_override = path in self._matte_overrides
-                        prev_override = self._matte_overrides.get(path)
                         async def _apply():
                             try:
                                 await self.tv.change_matte(content_id, effective, portrait_matte=effective)
