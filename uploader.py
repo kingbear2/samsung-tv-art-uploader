@@ -275,7 +275,16 @@ class PIL_methods:
         equal_content = diff <= 1.0                 #pick a threshhold
         self.log.debug('equal_content: {}, diff: {}'.format(equal_content, diff))
         return equal_content
-    
+
+
+class _MatteRejectedError(Exception):
+    '''Raised when the TV rejects a matte for an image during apply (error -7).
+    Carries the rejected matte id so the caller can surface a friendly message.'''
+    def __init__(self, matte):
+        super().__init__(f'TV rejected matte {matte!r} (-7)')
+        self.matte = matte
+
+
 class monitor_and_display:
     
     allowed_ext = ['jpg', 'jpeg', 'png', 'bmp', 'tif']
@@ -1416,6 +1425,12 @@ class monitor_and_display:
                         pass
                 content_id = None
                 matte_for_upload = self._resolve_matte_for(path_rel_for_matte, os.path.basename(filename))
+                # NOTE: On this firmware, the matte is baked into the rendered
+                # composite at upload time via the send_image matte_id field.
+                # Subsequent change_matte calls update stored metadata but do
+                # NOT trigger a re-render, so the only way to change an
+                # image's displayed matte is to delete + re-upload it. That's
+                # why we pass matte_for_upload here (not 'none').
                 try:
                     content_id = await self._upload_to_tv(file_data, file_type, matte_for_upload)
                     consecutive_failures = 0  # Reset on success
@@ -1426,8 +1441,7 @@ class monitor_and_display:
                     # If the failure was the TV rejecting an invalid matte
                     # for this image (error -7), retry once with matte=none
                     # and pin the per-image override to 'none' so we don't
-                    # repeat the same bad combo on future uploads. Matches
-                    # the slideshow-rotation reapply behaviour.
+                    # repeat the same bad combo on future uploads.
                     if (matte_for_upload and matte_for_upload != 'none'
                             and self._is_matte_minus_7(e)):
                         self.log.warning(
@@ -3359,8 +3373,11 @@ class monitor_and_display:
                 self._publish_ack('slideshow/override/clear', 'ok', 'Slideshow override cleared; auto mode restored', req_id)
                 return
             if cmd == 'slideshow/matte/set':
-                # Set or clear per-image matte. Persists to disk and,
-                # if the image is currently uploaded to the TV, applies live via change_matte.
+                # Save the per-image matte override silently. We do NOT call
+                # change_matte here — on this firmware that's a no-op for the
+                # rendered image (the matte is baked at upload time). The user
+                # makes the change visible by clicking "Apply now" in the
+                # modal, which fires slideshow/matte/apply (delete + reupload).
                 try:
                     if not isinstance(data, dict):
                         self._publish_ack('slideshow/matte/set', 'error', 'Invalid JSON', req_id)
@@ -3370,13 +3387,6 @@ class monitor_and_display:
                     if not path:
                         self._publish_ack('slideshow/matte/set', 'error', 'Missing path', req_id)
                         return
-                    # Snapshot the pre-change override state BEFORE we mutate
-                    # self._matte_overrides, so the -7 rollback path below can
-                    # truly restore the previous value (capturing after the
-                    # mutation would just re-save the bad matte).
-                    had_override = path in self._matte_overrides
-                    prev_override = self._matte_overrides.get(path)
-                    # Empty matte (or 'default'/'__default__') clears the override → fall back to global
                     if matte in ('', 'default', '__default__'):
                         self._matte_overrides.pop(path, None)
                         effective = self._resolve_matte_for(path, os.path.basename(path))
@@ -3385,39 +3395,45 @@ class monitor_and_display:
                         effective = matte
                     self._save_matte_overrides()
                     self._publish_matte_overrides()
-                    # Apply live to TV if the image is uploaded
-                    content_id = None
-                    for k, v in self.uploaded_files.items():
-                        if v.get('path_rel') == path or k == os.path.basename(path):
-                            content_id = v.get('content_id')
-                            break
-                    if content_id:
-                        async def _apply():
-                            try:
-                                await self.tv.change_matte(content_id, effective, portrait_matte=effective)
-                                self._publish_ack('slideshow/matte/set', 'ok', f'Matte set to {effective}', req_id, extra={'path': path, 'matte': effective})
-                            except Exception as ex:
-                                # The TV NACKs a redundant 'none' set with -7 when the image
-                                # already has no matte. That's not a real failure \u2014 the user's
-                                # intent (no matte) is already satisfied. Treat as success.
-                                if effective == 'none' and self._is_matte_minus_7(ex):
-                                    self.log.debug('change_matte none for %s: TV says already none (-7); treating as ok', path)
-                                    self._publish_ack('slideshow/matte/set', 'ok', 'Matte already none', req_id, extra={'path': path, 'matte': effective})
-                                    return
-                                self.log.warning('change_matte failed for %s: %s', path, ex)
-                                # Revert persisted override so the staged state matches reality.
-                                if had_override:
-                                    self._matte_overrides[path] = prev_override
-                                else:
-                                    self._matte_overrides.pop(path, None)
-                                self._save_matte_overrides()
-                                self._publish_matte_overrides()
-                                self._publish_ack('slideshow/matte/set', 'error', f'TV rejected matte "{effective}" ({ex})', req_id, extra={'path': path, 'matte': effective})
-                        self._schedule_command_coro(_apply(), 'slideshow/matte/set')
-                    else:
-                        self._publish_ack('slideshow/matte/set', 'ok', f'Matte set to {effective}', req_id, extra={'path': path, 'matte': effective})
+                    self._publish_ack('slideshow/matte/set', 'ok',
+                                      f'Matte saved ({effective}). Click "Apply now" to update the TV.',
+                                      req_id, extra={'path': path, 'matte': effective})
                 except Exception as e:
                     self._publish_ack('slideshow/matte/set', 'error', str(e), req_id)
+                return
+            if cmd == 'slideshow/matte/apply':
+                # Make a previously-saved matte override visible on the TV by
+                # deleting the image and re-uploading it with the new matte
+                # baked into the send_image request. This is the only path
+                # that produces a visible matte change on this firmware.
+                try:
+                    if not isinstance(data, dict):
+                        self._publish_ack('slideshow/matte/apply', 'error', 'Invalid JSON', req_id)
+                        return
+                    path = str(data.get('path', '')).strip()
+                    if not path:
+                        self._publish_ack('slideshow/matte/apply', 'error', 'Missing path', req_id)
+                        return
+                    async def _apply_reupload():
+                        try:
+                            new_id, effective = await self._apply_matte_via_reupload(path)
+                            self._publish_ack(
+                                'slideshow/matte/apply', 'ok',
+                                f'Matte {effective} applied',
+                                req_id, extra={'path': path, 'matte': effective, 'content_id': new_id},
+                            )
+                        except _MatteRejectedError as ex:
+                            self._publish_ack(
+                                'slideshow/matte/apply', 'error',
+                                f'TV rejected matte "{ex.matte}" for this image; pinned to none.',
+                                req_id, extra={'path': path, 'matte': 'none'},
+                            )
+                        except Exception as ex:
+                            self.log.warning('matte/apply failed for %s: %s', path, ex)
+                            self._publish_ack('slideshow/matte/apply', 'error', str(ex), req_id, extra={'path': path})
+                    self._schedule_command_coro(_apply_reupload(), 'slideshow/matte/apply')
+                except Exception as e:
+                    self._publish_ack('slideshow/matte/apply', 'error', str(e), req_id)
                 return
             if cmd == 'slideshow/matte_options/request':
                 fut = self._schedule_command_coro(self._publish_matte_options(), 'slideshow/matte_options/request')
@@ -3655,57 +3671,140 @@ class monitor_and_display:
         content_id = self.get_next_art()
         if content_id and content_id != self.current_content_id:
             self.log.info('selecting tv art: content_id: %s (shown %d/%d)', content_id, len(self.shown_content_ids) + 1, len(self.get_content_ids()))
+            # NOTE: We do NOT call change_matte here. On this firmware the
+            # matte is baked into the rendered composite at upload time and
+            # change_matte is metadata-only — it never triggers a re-render.
+            # The displayed matte will be whatever was baked when the image
+            # was last uploaded. To change a matte visibly, the user triggers
+            # an explicit re-upload via the slideshow/matte/apply command.
             await self.tv.select_image(content_id)
             self.shown_content_ids.add(content_id)  # Mark as shown
             self.current_content_id = content_id
-            await self._reapply_matte_for(content_id)
             await self.update_ha_selected_artwork(content_id)
         else:
             self.log.info('skipping art update, as new content_id: %s is the same', content_id)
 
-    async def _reapply_matte_for(self, content_id):
-        '''Re-apply the per-image (or global) matte after select_image. The TV's
-        built-in slideshow tends to snap each image back to its upload-time matte
-        when it cycles, so when WE drive the slideshow we must restate the matte
-        on every cycle for our overrides to actually stick on screen.'''
-        try:
-            path_rel = None
-            fname = None
-            for k, v in self.uploaded_files.items():
-                if v.get('content_id') == content_id:
-                    path_rel = v.get('path_rel') or k
-                    fname = os.path.basename(path_rel) if path_rel else k
-                    break
-            effective = self._resolve_matte_for(path_rel, fname) or 'none'
+    async def _apply_matte_via_reupload(self, path):
+        '''Make a per-image matte override visible on the TV by deleting the
+        existing content_id and re-uploading the image with the matte baked
+        into the send_image request. This is the only path that actually
+        produces a visible matte change on this firmware (change_matte alone
+        is metadata-only and does not trigger a re-render).
+
+        Raises:
+          - _MatteRejectedError if the TV rejects the matte (-7); the override
+            is automatically pinned to 'none' and the image is re-uploaded
+            with no matte before the exception is raised.
+          - RuntimeError on other failures (not in art mode, file missing,
+            image not currently uploaded, empty upload response).
+        '''
+        if not self.tv.art_mode:
+            raise RuntimeError('TV is not in art mode')
+        # Locate the uploaded_files entry for this path
+        info = None
+        base = None
+        for k, v in self.uploaded_files.items():
+            if v.get('path_rel') == path or k == os.path.basename(path):
+                info = v
+                base = k
+                break
+        if not info:
+            raise RuntimeError(f'Image is not currently uploaded: {path}')
+        old_content_id = info.get('content_id')
+        rel_path = info.get('path_rel') or path
+        # Resolve the file on disk: try media_root + rel_path first, then
+        # self.folder + basename for single-folder mode.
+        abs_path = None
+        if self.media_root:
+            cand = os.path.join(self.media_root, rel_path)
+            if os.path.isfile(cand):
+                abs_path = cand
+        if abs_path is None and self.folder:
+            cand = os.path.join(self.folder, base)
+            if os.path.isfile(cand):
+                abs_path = cand
+        if abs_path is None:
+            raise RuntimeError(f'File not found on disk for path: {path}')
+        matte = self._resolve_matte_for(rel_path, os.path.basename(rel_path)) or 'none'
+        file_data, file_type = self.read_file(abs_path)
+        if not file_data:
+            raise RuntimeError(f'Failed to read file: {abs_path}')
+        # If we're currently showing the image, switch to standby first so
+        # the TV isn't left holding a stale reference during the delete.
+        was_current = bool(old_content_id) and old_content_id == self.current_content_id
+        if was_current and self.standby_content_id:
             try:
-                await self.tv.change_matte(content_id, effective, portrait_matte=effective)
+                await self.tv.select_image(self.standby_content_id)
+                self.current_content_id = self.standby_content_id
             except Exception as ex:
-                # Redundant 'none' set on an already-clear image throws -7; benign.
-                if effective == 'none' and self._is_matte_minus_7(ex):
-                    return
-                # TV rejected this matte for this image (the TV's matte_list
-                # advertises every layout it supports, not every layout that
-                # will succeed on every image). Pin this image to 'none' so we
-                # don't keep retrying every cycle, then reapply none.
-                if self._is_matte_minus_7(ex) and path_rel:
-                    self.log.warning('TV rejected matte %s for %s (-7); pinning image to none',
-                                     effective, path_rel)
-                    self._matte_overrides[path_rel] = 'none'
-                    try:
-                        self._save_matte_overrides()
-                        self._publish_matte_overrides()
-                    except Exception:
-                        pass
-                    try:
-                        await self.tv.change_matte(content_id, 'none', portrait_matte='none')
-                    except Exception:
-                        pass
-                    return
-                raise
-            self.log.debug('reapplied matte %s for content_id=%s (path=%s)', effective, content_id, path_rel)
+                self.log.debug('matte apply: pre-delete standby select failed: %s', ex)
+        # Delete the existing content_id
+        if old_content_id:
+            try:
+                self.log.info('matte apply: deleting %s for %s', old_content_id, rel_path)
+                await self.tv.delete_list([old_content_id])
+            except Exception as ex:
+                self.log.warning('matte apply: delete failed for %s (%s): %s', rel_path, old_content_id, ex)
+        # Re-upload with the matte baked in
+        self.log.info('matte apply: re-uploading %s with matte=%s', rel_path, matte)
+        rejected = False
+        try:
+            new_content_id = await self._upload_to_tv(file_data, file_type, matte)
         except Exception as ex:
-            self.log.debug('change_matte (cycle) failed for %s: %s', content_id, ex)
-    
+            if matte != 'none' and self._is_matte_minus_7(ex):
+                rejected = True
+                new_content_id = None
+            else:
+                raise
+        # Silent-failure: empty content_id with a non-'none' matte means the
+        # TV swallowed the request — treat as rejection.
+        if new_content_id is None and not rejected and matte != 'none':
+            rejected = True
+        if rejected:
+            self.log.warning('matte apply: TV rejected matte %r for %s; pinning to none and re-uploading',
+                             matte, rel_path)
+            self._matte_overrides[rel_path] = 'none'
+            try:
+                self._save_matte_overrides()
+                self._publish_matte_overrides()
+            except Exception:
+                pass
+            try:
+                new_content_id = await self._upload_to_tv(file_data, file_type, 'none')
+            except Exception as ex2:
+                raise RuntimeError(f'fallback upload (matte=none) failed: {ex2}') from ex2
+            if not new_content_id:
+                raise RuntimeError('fallback upload (matte=none) returned no content_id')
+            self.update_uploaded_files(base, new_content_id, full_path=abs_path)
+            self.write_program_data()
+            # Restore display if we were showing the image
+            if was_current:
+                try:
+                    await self.tv.select_image(new_content_id)
+                    self.current_content_id = new_content_id
+                except Exception as ex:
+                    self.log.debug('matte apply: post-reupload select failed: %s', ex)
+            try:
+                self._publish_slideshow_state()
+            except Exception:
+                pass
+            raise _MatteRejectedError(matte)
+        if not new_content_id:
+            raise RuntimeError('upload returned no content_id')
+        self.update_uploaded_files(base, new_content_id, full_path=abs_path)
+        self.write_program_data()
+        if was_current:
+            try:
+                await self.tv.select_image(new_content_id)
+                self.current_content_id = new_content_id
+            except Exception as ex:
+                self.log.warning('matte apply: post-reupload select failed for %s: %s', rel_path, ex)
+        try:
+            self._publish_slideshow_state()
+        except Exception:
+            pass
+        return new_content_id, matte
+
     async def check_dir(self):
         '''
         scan folder for new, deleted or updated files, but only when tv is in art mode

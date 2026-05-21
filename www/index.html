@@ -186,7 +186,19 @@
     }
     .sl-thumb:hover { border-color: #5b4a44; }
     .sl-thumb.selected { border-color: #2f7fbf; }
+    .sl-thumb.on-tv { border-color: #d4a017; box-shadow: 0 0 0 2px rgba(212,160,23,0.35); }
+    .sl-thumb.on-tv.selected { border-color: #2f7fbf; box-shadow: 0 0 0 2px rgba(212,160,23,0.55); }
     .sl-thumb.disabled { opacity: 0.4; cursor: not-allowed; }
+    .sl-thumb-star {
+      position: absolute; left: 6px; bottom: 6px;
+      width: 36px; height: 36px;
+      display: flex; align-items: center; justify-content: center;
+      color: #f5c542;
+      text-shadow: 0 0 4px rgba(0,0,0,0.9), 0 0 8px rgba(0,0,0,0.75);
+      font-size: 32px; line-height: 1;
+      pointer-events: none;
+      z-index: 2;
+    }
     .sl-thumb img { width: 100%; aspect-ratio: 16/9; object-fit: cover; display: block; }
     /* Matte preview overlay: sits above the img but below the on-thumb controls */
     .sl-thumb-matte-preview {
@@ -671,7 +683,7 @@
       </div>
       <div class="card-footer">
         <a class="bmc-link" href="https://buymeacoffee.com/kohlerryan" target="_blank" rel="noopener noreferrer">☕ Buy me a coffee</a>
-        <span class="version-tag">v0.4.3</span>
+        <span class="version-tag">v0.4.4</span>
       </div>
     </div>
   </div>
@@ -876,6 +888,9 @@
             const attrs = JSON.parse(payload.toString() || '{}');
             lastAttrs = attrs;
             setInfo(attrs);
+            // The currently-displayed image determines the star marker in
+            // the slideshow grid — re-render so it follows the TV.
+            try { renderSlideshowGrid(); } catch(_) {}
           }
           if (topic === TOPIC_SETTINGS_ATTR) {
             const attrs = JSON.parse(payload.toString() || '{}');
@@ -1002,30 +1017,62 @@
                 const $m = document.getElementById('sl-msg');
                 const path = ack.path;
                 if (status === 'ok') {
-                  // TV accepted — now apply the pending matte to local state
-                  // and re-render the preview/selects/grid.
-                  if (path && Object.prototype.hasOwnProperty.call(_pendingMatte, path)) {
-                    const pending = _pendingMatte[path];
-                    if (!pending || pending === 'none') delete slideshowMattes[path];
-                    else slideshowMattes[path] = pending;
-                    delete _pendingMatte[path];
-                  }
-                  _setModalPending(false);
+                  // Override is persisted on the server; local state was
+                  // already updated optimistically when we sent the publish.
+                  // Drop the rollback breadcrumb and re-render so the Apply
+                  // button reflects the new staged state.
+                  if (path) delete _matteSetRollback[path];
                   if (_slModalEl) _renderSlModalContents();
                   renderSlideshowGrid();
                 } else if (status === 'error') {
-                  const errText = `Matte rejected by TV for this image. Try a different color/style combo.`;
+                  const errText = ack.message ? `Could not save matte: ${ack.message}` : 'Could not save matte.';
                   if ($m) {
                     $m.textContent = errText;
                     $m.style.color = '#e08080';
+                    setTimeout(()=>{ if($m){ $m.textContent=''; $m.style.color=''; } }, 6000);
+                  }
+                  // Roll back local optimistic update
+                  if (path && Object.prototype.hasOwnProperty.call(_matteSetRollback, path)) {
+                    const prev = _matteSetRollback[path];
+                    if (prev && prev !== 'none') slideshowMattes[path] = prev;
+                    else delete slideshowMattes[path];
+                    delete _matteSetRollback[path];
+                  }
+                  if (_slModalEl) _renderSlModalContents();
+                  renderSlideshowGrid();
+                }
+              }
+              if (cmd === 'slideshow/matte/apply') {
+                const $m = document.getElementById('sl-msg');
+                const path = ack.path;
+                if (path) delete _pendingMatte[path];
+                if (status === 'ok') {
+                  // The image was re-uploaded with the new matte baked in.
+                  if (path) delete _matteDirty[path];
+                  _setModalPending(false);
+                  if (_slModalEl) {
+                    _renderSlModalContents();
+                    const $mm = _slModalEl.querySelector('.sl-modal-msg');
+                    if ($mm) {
+                      $mm.textContent = 'Matte applied.';
+                      $mm.style.color = '';
+                      clearTimeout($mm._clearTimer);
+                      $mm._clearTimer = setTimeout(()=>{ if($mm) $mm.textContent=''; }, 4000);
+                    }
+                  }
+                  renderSlideshowGrid();
+                } else if (status === 'error') {
+                  const errText = ack.message || 'Apply failed';
+                  if ($m) {
+                    $m.textContent = `Apply failed: ${errText}`;
+                    $m.style.color = '#e08080';
                     setTimeout(()=>{ if($m){ $m.textContent=''; $m.style.color=''; } }, 8000);
                   }
-                  // Drop the pending desire and force the override back to
-                  // 'none' locally so the UI clearly shows the change didn't
-                  // stick (the TV is still on whatever it was before).
-                  if (path) {
-                    delete _pendingMatte[path];
+                  // If the TV rejected the matte, the server has pinned the
+                  // override to 'none' — reflect that locally.
+                  if (path && ack.matte === 'none') {
                     delete slideshowMattes[path];
+                    delete _matteDirty[path];
                   }
                   _setModalPending(false);
                   if (_slModalEl) {
@@ -1033,8 +1080,11 @@
                     const $mm = _slModalEl.querySelector('.sl-modal-msg');
                     if ($mm) {
                       $mm.textContent = errText;
+                      $mm.style.color = '#e08080';
                       clearTimeout($mm._clearTimer);
-                      $mm._clearTimer = setTimeout(()=>{ if($mm) $mm.textContent=''; }, 8000);
+                      $mm._clearTimer = setTimeout(()=>{
+                        if ($mm) { $mm.textContent=''; $mm.style.color=''; }
+                      }, 8000);
                     }
                   }
                   renderSlideshowGrid();
@@ -1896,7 +1946,7 @@
     const SL_PRESETS_KEY = 'sl-presets'; // kept for migration only
     let slideshowPresets = [];
     // ── Per-image matte overrides ──────────────────────────────────────────
-    let slideshowMattes = {};                // { path_rel: matte_id }
+    let slideshowMattes = {};                // { path_rel: matte_id }  — saved override
     let slideshowMatteTypes = [];            // available matte type names from TV
     let slideshowMatteColors = [];           // available matte color names from TV
     let _matteOptionsRequested = false;
@@ -1904,6 +1954,13 @@
       if (typeof client !== 'undefined' && client) {
         client.publish(TOPIC_CMD_PREFIX + '/slideshow/matte/set',
           JSON.stringify({ path, matte: (matte || '__default__'), req_id: 'matte-' + Date.now() }),
+          { qos: 1 });
+      }
+    }
+    function publishMatteApply(path) {
+      if (typeof client !== 'undefined' && client) {
+        client.publish(TOPIC_CMD_PREFIX + '/slideshow/matte/apply',
+          JSON.stringify({ path, req_id: 'matte-apply-' + Date.now() }),
           { qos: 1 });
       }
     }
@@ -2200,6 +2257,14 @@
     // Map of path -> requested matte id awaiting TV ack. Used to defer the
     // local state + preview update until the TV confirms the change.
     const _pendingMatte = Object.create(null);
+    // Map of path -> prior matte id, kept only between optimistic save and
+    // the matte/set ack. Used to roll back if the server reports an error.
+    const _matteSetRollback = Object.create(null);
+    // Set-like map of path -> true for images whose saved matte differs from
+    // what's currently baked on the TV (i.e. the user staged a change but
+    // hasn't clicked "Apply matte" yet). Drives visibility of the Apply
+    // button in the modal.
+    const _matteDirty = Object.create(null);
     function _setModalPending(on) {
       if (!_slModalEl) return;
       const $frame = _slModalEl.querySelector('.sl-modal-img-frame');
@@ -2264,10 +2329,15 @@
       const $type = _slModalEl.querySelector('#sl-modal-matte-type');
       const $swatches = _slModalEl.querySelector('#sl-modal-matte-color');
       const $lock = _slModalEl.querySelector('.sl-modal-matte-lock');
+      const $apply = _slModalEl.querySelector('.sl-modal-apply');
       const onTv = Array.isArray(slideshowCurrentPaths) && slideshowCurrentPaths.indexOf(img.path) !== -1;
       if ($type) $type.disabled = !onTv;
       if ($swatches) $swatches.classList.toggle('disabled', !onTv);
       if ($lock) $lock.textContent = onTv ? '' : 'Matte picker unlocks once this image is uploaded to the TV.';
+      if ($apply) {
+        $apply.style.display = onTv ? '' : 'none';
+        $apply.disabled = !onTv || Object.prototype.hasOwnProperty.call(_pendingMatte, img.path);
+      }
       const $toggle = _slModalEl.querySelector('.sl-modal-toggle');
       if ($toggle) {
         $toggle.classList.toggle('selected', isSel);
@@ -2311,6 +2381,7 @@
             <label for="sl-modal-matte-type">Matte:</label>
             <select id="sl-modal-matte-type"></select>
             <div id="sl-modal-matte-color" class="sl-matte-swatches" role="radiogroup" aria-label="Matte color"></div>
+            <button type="button" class="sl-modal-apply" title="Re-upload this image with the selected matte (the only way to change a matte on this TV).">Apply matte</button>
             <button type="button" class="sl-modal-toggle">Add to selection</button>
           </div>
           <div class="sl-modal-matte-lock"></div>
@@ -2343,9 +2414,7 @@
         const cur = _slModalList[_slModalIdx];
         if (!cur) return;
         // Refuse to publish a matte change for an image that isn't on the TV
-        // yet — the TV can't validate the combo, so we'd just persist a
-        // potentially-bad override silently. _renderSlModalContents disables
-        // the controls in that case; this is defence-in-depth.
+        // yet — we can't apply it visually until the next upload anyway.
         if (!Array.isArray(slideshowCurrentPaths) || slideshowCurrentPaths.indexOf(cur.path) === -1) {
           return;
         }
@@ -2353,18 +2422,25 @@
         if (tval === '__probing__') return;
         const cval = $matteColor.dataset.color || '';
         const val = _joinMatteId(tval, cval);
-        // Don't update preview or local state yet — wait for the TV ack to
-        // confirm the matte was accepted. Show a spinner over the image so
-        // the user knows we're working on it.
-        _pendingMatte[cur.path] = val;
+        // Optimistic local update — server save is unconditional (it just
+        // persists the override). The matte won't be visible on the TV
+        // until the user clicks "Apply matte". Stash the prior value so the
+        // ack handler can roll back on the unlikely server error.
+        _matteSetRollback[cur.path] = slideshowMattes[cur.path] || 'none';
+        if (!val || val === 'none') delete slideshowMattes[cur.path];
+        else slideshowMattes[cur.path] = val;
+        _matteDirty[cur.path] = true;
         publishMatte(cur.path, val);
         // Clear any prior error message immediately on a new attempt.
         const $mm = overlay.querySelector('.sl-modal-msg');
         if ($mm) {
           clearTimeout($mm._clearTimer);
-          $mm.textContent = '';
+          $mm.textContent = 'Saved — click "Apply matte" to update the TV.';
+          $mm.style.color = '';
+          $mm._clearTimer = setTimeout(()=>{ if($mm){ $mm.textContent=''; } }, 5000);
         }
-        _setModalPending(true);
+        if (_slModalEl) _renderSlModalContents();
+        renderSlideshowGrid();
       }
       $matteType.addEventListener('change', () => {
         // Repopulate color list for the new type (defaults to first alpha color).
@@ -2385,6 +2461,29 @@
         });
         _commitMatteChange();
       });
+
+      // Apply now — re-upload current image so the matte change becomes
+      // visible on the TV (the firmware's change_matte message is metadata-
+      // only on this model; baking via re-upload is the only path).
+      const $apply = overlay.querySelector('.sl-modal-apply');
+      if ($apply) {
+        $apply.addEventListener('click', () => {
+          if (slideshowUploading) return;
+          const cur = _slModalList[_slModalIdx];
+          if (!cur) return;
+          if (!Array.isArray(slideshowCurrentPaths) || slideshowCurrentPaths.indexOf(cur.path) === -1) return;
+          _pendingMatte[cur.path] = slideshowMattes[cur.path] || 'none';
+          _setModalPending(true);
+          $apply.disabled = true;
+          const $mm = overlay.querySelector('.sl-modal-msg');
+          if ($mm) {
+            clearTimeout($mm._clearTimer);
+            $mm.textContent = 'Applying matte to TV (re-uploading)…';
+            $mm.style.color = '';
+          }
+          publishMatteApply(cur.path);
+        });
+      }
 
       // Toggle selection from the modal — operates on currently displayed image.
       const $toggle = overlay.querySelector('.sl-modal-toggle');
@@ -2846,6 +2945,14 @@
       function thumbHtml(img, opts) {
         opts = opts || {};
         const isSel = slideshowSelected.has(img.path);
+        const isOnTv = Array.isArray(slideshowCurrentPaths) && slideshowCurrentPaths.indexOf(img.path) !== -1;
+        // Currently-displayed image on the TV — derived from the retained
+        // selected_artwork/attributes topic (collection + file).
+        let displayedPath = '';
+        if (lastAttrs && lastAttrs.file) {
+          displayedPath = lastAttrs.collection ? `${lastAttrs.collection}/${lastAttrs.file}` : lastAttrs.file;
+        }
+        const isDisplayed = !!displayedPath && img.path === displayedPath;
         const thumbUrl = `${location.origin}/app/frame_tv_art_collections/${encodeURIComponent(img.folder)}/${encodeURIComponent(img.file)}`;
         const draggableAttr = opts.draggable ? ' draggable="true"' : '';
         const draggableCls = opts.draggable ? ' sl-draggable' : '';
@@ -2857,9 +2964,12 @@
         // override applied.
         const matteCss = matteCssFor(curMatte);
         const matteOverlay = matteCss ? `<div class="sl-thumb-matte-preview" style="${matteCss}"></div>` : '';
-        return `<div class="sl-thumb${isSel ? ' selected' : ''}${draggableCls}" data-path="${escapeHtml(img.path)}"${draggableAttr} title="Double-click to preview / change matte">
+        const onTvTitle = isDisplayed ? ' — currently displayed on TV' : (isOnTv ? ' — currently on TV' : '');
+        const starHtml = isDisplayed ? '<div class="sl-thumb-star" title="Currently displayed on TV">\u2605</div>' : '';
+        return `<div class="sl-thumb${isSel ? ' selected' : ''}${isOnTv ? ' on-tv' : ''}${draggableCls}" data-path="${escapeHtml(img.path)}"${draggableAttr} title="Double-click to preview / change matte${onTvTitle}">
           <img data-src="${thumbUrl}" alt="${escapeHtml(img.title || img.file)}" onerror="this.style.display='none'">
           ${matteOverlay}
+          ${starHtml}
           <div class="sl-thumb-check" data-check-for="${escapeHtml(img.path)}" title="${isSel ? 'Click to deselect' : 'Click to select'}">${isSel ? '\u2713' : ''}</div>
           ${ordHtml}
         </div>`;
