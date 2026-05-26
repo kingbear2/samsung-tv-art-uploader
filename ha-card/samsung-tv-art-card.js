@@ -1,5 +1,5 @@
 /**
- * Frame TV Art Card v0.4.0
+ * Frame TV Art Card v0.4.1
  *
  * Viewer-only card. Displays the currently selected artwork with metadata
  * (title / artist / year / medium / description) and a "TV not in art mode"
@@ -19,6 +19,11 @@ class FrameTVArtCard extends HTMLElement {
     this._logLines = [];   // rolling buffer of frame_tv/log lines (shown during standby)
     this._logUnsubscribe = null;
     this._logSubscribing = false;
+    // Sticky: once a subscribe attempt is rejected (e.g. non-admin user without
+    // `mqtt/subscribe` permission), don't try again for the lifetime of this card.
+    // Otherwise every hass state tick would re-issue the failing WS command
+    // (~25/min) and flood the HA auth log.
+    this._logSubFailed = false;
   }
 
   setConfig(config) {
@@ -46,6 +51,11 @@ class FrameTVArtCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    // Always-on subscription so the rolling log buffer captures messages emitted
+    // before standby is visible (the backend logs during the work that *causes*
+    // standby — subscribing only once standby appears would miss those lines).
+    // The sticky `_logSubFailed` flag inside ensures non-admin users that get
+    // rejected by `mqtt/subscribe` don't retry on every hass tick.
     this._ensureLogSubscription();
     const newHash = this._getStateHash();
     if (newHash === this._lastStateHash) return;
@@ -61,6 +71,10 @@ class FrameTVArtCard extends HTMLElement {
   }
 
   disconnectedCallback() {
+    this._teardownLogSubscription();
+  }
+
+  _teardownLogSubscription() {
     if (typeof this._logUnsubscribe === 'function') {
       try { this._logUnsubscribe(); } catch (_) {}
     }
@@ -71,6 +85,7 @@ class FrameTVArtCard extends HTMLElement {
   _ensureLogSubscription() {
     if (!this._hass || !this._hass.connection) return;
     if (this._logSubscribing || this._logUnsubscribe) return;
+    if (this._logSubFailed) return;  // don't retry after a permission failure
     this._logSubscribing = true;
     this._hass.connection
       .subscribeMessage(
@@ -93,7 +108,19 @@ class FrameTVArtCard extends HTMLElement {
         { type: 'mqtt/subscribe', topic: 'frame_tv/log' }
       )
       .then((unsub) => { this._logUnsubscribe = unsub; })
-      .catch(() => {})
+      .catch((err) => {
+        // Only set the sticky lockout for permission errors. Any other failure
+        // (transient WS hiccup on page load, etc.) should be allowed to retry
+        // on the next hass tick — otherwise a single hiccup permanently kills
+        // log streaming for the lifetime of the card.
+        const code = err && (err.code || err.error_code);
+        const msg = String((err && (err.message || err.code)) || '').toLowerCase();
+        if (code === 'unauthorized' || msg.includes('unauth') || msg.includes('not allowed') || msg.includes('admin')) {
+          this._logSubFailed = true;
+        }
+        // eslint-disable-next-line no-console
+        try { console.warn('[frame-tv-art-card] mqtt/subscribe failed:', err); } catch (_) {}
+      })
       .finally(() => { this._logSubscribing = false; });
   }
 
@@ -503,7 +530,7 @@ class FrameTVArtCard extends HTMLElement {
   }
 }
 
-console.info('%c FRAME-TV-ART-CARD %c v0.4.0 ', 'color: white; background: #03a9f4; font-weight: bold;', '');
+console.info('%c FRAME-TV-ART-CARD %c v0.4.1 ', 'color: white; background: #03a9f4; font-weight: bold;', '');
 
 try {
   if (!customElements.get('frame-tv-art-card')) {
