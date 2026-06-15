@@ -274,6 +274,10 @@ class monitor_and_display:
         self.artmode_refresh_seconds = int(os.environ.get('SAMSUNG_TV_ART_MODE_CHECK_SECONDS', '5'))
         self.last_artmode_check = 0
         self.consecutive_failures = 0
+        try:
+            self.restart_after_errors = int(os.environ.get('SAMSUNG_TV_ART_RESTART_AFTER_ERRORS', '25'))
+        except Exception:
+            self.restart_after_errors = 25
         self.max_backoff_seconds = 15  # Max 15 seconds between art mode re-checks
         self.reconnect_delay = 5
         self.update_time = int(max(0, update_time*60))   #convert minutes to seconds
@@ -550,6 +554,25 @@ class monitor_and_display:
                 self.log.warning('Reconnect attempt %d failed: %s', attempt, e)
         return False
 
+    def _restart_if_error_limit_reached(self, reason):
+        """Exit so Docker restart policy can recover a wedged Samsung TV websocket."""
+        limit = getattr(self, 'restart_after_errors', 25)
+        try:
+            limit = int(limit)
+        except Exception:
+            limit = 25
+        if limit > 0 and self.consecutive_failures >= limit:
+            self.log.error(
+                'TV communication failure limit reached (%d/%d) after %s; exiting for Docker restart',
+                self.consecutive_failures,
+                limit,
+                reason,
+            )
+            try:
+                logging.shutdown()
+            finally:
+                os._exit(75)
+
     async def safe_in_artmode(self):
         """Return True if TV reports art mode; False on any error. Uses exponential backoff."""
         try:
@@ -569,6 +592,7 @@ class monitor_and_display:
         except AssertionError:
             self.consecutive_failures += 1
             self.log.warning('TV artmode check failed (empty response, failure %d); treating as off', self.consecutive_failures)
+            self._restart_if_error_limit_reached('empty artmode response')
             prev = self._in_art_mode
             self._in_art_mode = False
             if prev is True:
@@ -577,6 +601,7 @@ class monitor_and_display:
         except Exception as e:
             self.consecutive_failures += 1
             self.log.warning('TV artmode check failed (failure %d): %s', self.consecutive_failures, e)
+            self._restart_if_error_limit_reached('artmode exception')
             prev = self._in_art_mode
             self._in_art_mode = False
             if prev is True:
@@ -594,6 +619,20 @@ class monitor_and_display:
     async def cleanup_old_uploads(self):
         """Delete previously uploaded photos from the TV in small batches to avoid overwhelming it."""
         try:
+            if os.environ.get('SAMSUNG_TV_ART_SKIP_CLEANUP', 'false').lower() == 'true':
+                self.log.info('Skipping cleanup (SAMSUNG_TV_ART_SKIP_CLEANUP=true)')
+                # Still reset uploaded_files tracking so add_files sees headroom
+                # for the new collection. The old images stay on the TV but the
+                # tracker is cleared so new uploads can proceed.
+                selected = list(getattr(self, 'selected_collections', []) or [])
+                self.cache = {'_selected_collections': selected} if selected else {}
+                self.current_key = None
+                self.uploaded_files = {}
+                try:
+                    self.save_cache()
+                except Exception as e:
+                    self.log.warning('Failed to preserve selection cache: %s', e)
+                return
             if not await self.safe_in_artmode():
                 self.log.info('TV not in art mode, skipping cleanup')
                 return
@@ -1054,12 +1093,17 @@ class monitor_and_display:
                 try:
                     content_id = await self.tv.upload(file_data, file_type=file_type, matte=self.matte, portrait_matte=self.matte)
                     consecutive_failures = 0  # Reset on success
+                    self.consecutive_failures = 0
                 except AssertionError:
                     self.log.warning('file: %s failed to upload (empty response)', display_name)
                     consecutive_failures += 1
+                    self.consecutive_failures += 1
+                    self._restart_if_error_limit_reached('empty upload response')
                 except Exception as e:
                     self.log.warning('file: %s failed to upload: %s', display_name, e)
                     consecutive_failures += 1
+                    self.consecutive_failures += 1
+                    self._restart_if_error_limit_reached('upload exception')
                 
                 # If too many consecutive failures, try reconnecting to TV
                 if consecutive_failures >= max_consecutive_failures:
@@ -2700,6 +2744,14 @@ class monitor_and_display:
                 self.start = time.time()
                 self.write_program_data()
                 ack('ok', f'Refresh complete — {files_added} photos loaded')
+            elif len(self.get_content_ids()) > 0:
+                # No new uploads but images exist on TV (e.g. SKIP_CLEANUP kept them).
+                # Select one to move off standby.
+                self.log.info('No new uploads but %d images on TV, selecting artwork', len(self.get_content_ids()))
+                await self.change_art()
+                self.start = time.time()
+                self.write_program_data()
+                ack('ok', 'Refresh complete — artwork selected from existing uploads')
             else:
                 ack('ok', 'Refresh completed')
         except Exception as e:
@@ -2746,6 +2798,7 @@ async def main():
     retry_delay = 30  # Start with 30 seconds
     
     for attempt in range(max_retries):
+        mon = None
         try:
             mon = monitor_and_display(  args.ip,
                                         args.folder,
@@ -2763,6 +2816,12 @@ async def main():
             await mon.start_monitoring()
             break  # Success, exit retry loop
         except Exception as e:
+            try:
+                if mon is not None and getattr(mon, '_mqtt', None) is not None:
+                    mon._mqtt.loop_stop()
+                    mon._mqtt.disconnect()
+            except Exception:
+                pass
             log.warning('Failed to connect to TV (attempt %d/%d): %s', attempt + 1, max_retries, e)
             if attempt < max_retries - 1:
                 wait_time = retry_delay * (2 ** min(attempt, 4))  # Cap at 16x

@@ -44,6 +44,12 @@ fi
 if [ -n "$STANDBY_FILE" ]; then
   ARGS="$ARGS --standby $STANDBY_FILE"
 fi
+# Optional: disable PIL thumbnail sync. This sync can be slow/flaky on large TVs;
+# when disabled, the uploader still uploads/selects files from the active collection.
+SYNC_ENABLED="${SAMSUNG_TV_ART_SYNC:-true}"
+if [ "$SYNC_ENABLED" = "false" ] || [ "$SYNC_ENABLED" = "0" ] || [ "$SYNC_ENABLED" = "no" ]; then
+  ARGS="$ARGS -s"
+fi
 # Optional: enable verbose debug logging for troubleshooting
 if [ "${SAMSUNG_TV_ART_DEBUG:-false}" = "true" ]; then
   ARGS="$ARGS -D"
